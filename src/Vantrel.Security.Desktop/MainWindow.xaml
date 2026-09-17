@@ -77,14 +77,15 @@
                             <StackPanel>
                                 <TextBlock Text="SERVICE STATUS" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
                                 <TextBlock x:Name="ServiceStatusText" Text="Disconnected" FontSize="22" FontWeight="SemiBold" Margin="0,10,0,4"/>
+                                <TextBlock x:Name="ServiceVersionText" Text="Service version: —" Foreground="#A8B9C9" Margin="0,0,0,4"/>
                                 <TextBlock x:Name="HeartbeatText" Text="Checking local service…" Foreground="#A8B9C9" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
                         <Border Grid.Column="2" Background="#152438" CornerRadius="14" Padding="24" BorderBrush="#29415B" BorderThickness="1">
                             <StackPanel>
-                                <TextBlock Text="VERSION" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                                <TextBlock Text="DESKTOP VERSION" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
                                 <TextBlock x:Name="VersionText" Text="0.1.0" FontSize="22" FontWeight="SemiBold" Margin="0,10,0,4"/>
-                                <TextBlock Text="Task 001 foundation build" Foreground="#A8B9C9"/>
+                                <TextBlock Text="Pre-release development build" Foreground="#A8B9C9"/>
                             </StackPanel>
                         </Border>
                     </Grid>

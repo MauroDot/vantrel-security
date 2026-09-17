@@ -1,36 +1,21 @@
 # Vantrel Security
 
-Vantrel Security is a planned native Windows security and system health application. This repository currently contains **Task 001: the application foundation**. It has a WPF desktop shell, an independent Windows worker service, a small domain project, and local status communication. It does **not** scan, monitor, block, or remove threats.
+Vantrel Security is a planned native Windows security and system health application. Task 002 establishes a manageable Windows Service and local status communication with a non-elevated WPF desktop. It does **not** scan, monitor, block, or remove threats.
 
-**Vantrel Security is currently pre-release development software and should not be relied upon as the sole antivirus or endpoint protection system.** Keep Microsoft Defender and Windows Firewall enabled.
+**Vantrel Security is pre-release development software. It is not a replacement for Microsoft Defender or another established endpoint protection product.** Keep Defender and Windows Firewall enabled.
 
-## Current behavior
-
-The desktop shows navigation placeholders for Dashboard, Scan, Protection, Network, System Health, Quarantine, Activity, and Settings. The dashboard displays the desktop version, the actual service connection state, and the service heartbeat when connected. Protection is shown as **Unavailable** because no protection engine exists. The service updates an internal heartbeat every five seconds and responds to a `get_status` request over a named pipe.
-
-## Architecture
+## Projects and requirements
 
 | Project | Responsibility |
 | --- | --- |
-| `src/Vantrel.Security.Desktop` | WPF user interface and status display |
-| `src/Vantrel.Security.Service` | Independent worker host, heartbeat, status pipe server |
-| `src/Vantrel.Security.Core` | Platform-neutral status models, client contract, protocol validation |
-| `src/Vantrel.Security.Infrastructure` | Named pipe client and bounded message framing |
-| `tests/Vantrel.Security.Core.Tests` | Protocol and status behavior tests |
+| `src/Vantrel.Security.Desktop` | Non-elevated WPF shell and status display |
+| `src/Vantrel.Security.Service` | Independent worker, heartbeat, Windows Service lifetime, status pipe |
+| `src/Vantrel.Security.Core` | Status models and versioned protocol validation |
+| `src/Vantrel.Security.Infrastructure` | Windows pipe ACL, framing, and status client |
+| `tests/Vantrel.Security.Core.Tests` | Core protocol tests |
+| `tests/Vantrel.Security.Ipc.Tests` | Windows pipe and worker integration tests |
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for process and dependency details.
-
-## Prerequisites
-
-- Windows 11
-- .NET 9 SDK and Windows Desktop runtime (the SDK installation supplies the runtime for development)
-- PowerShell for the commands below
-
-WinUI 3 was considered, but this machine has no WinUI template or workload and the plain VS Code/.NET setup cannot build it reliably without additional tooling. WPF is included with the installed SDK and builds here without a Windows UI workload.
-
-## Restore, build, and test
-
-From the repository root:
+Windows 11, the .NET 9 SDK, and Windows PowerShell 5.1 are used for development. A target machine running the framework-dependent service needs a current, supported .NET 9 runtime. The development machine has runtime 9.0.3; check the [official .NET support and patch policy](https://dotnet.microsoft.com/en-us/platform/support/policy) before any installed deployment. .NET 9 support ends in November 2026, so migration to .NET 10 LTS is recommended next. WinUI 3 tooling was not present in the development environment; WPF builds with the installed SDK.
 
 ```powershell
 dotnet restore Vantrel.Security.sln
@@ -38,27 +23,60 @@ dotnet build Vantrel.Security.sln --no-restore
 dotnet test Vantrel.Security.sln --no-build
 ```
 
-## Run during development
+The IPC tests exercise Windows ACLs. Run them in a normal Windows session. A restricted sandbox token can receive access denied even when the same tests pass in a normal session.
 
-In one PowerShell terminal, run the service as the signed-in user:
+## Run interactively during development
+
+The service can run without installation. In a PowerShell terminal:
 
 ```powershell
 dotnet run --project src/Vantrel.Security.Service
 ```
 
-In a second terminal under the **same Windows user**, run the desktop:
+In another terminal under the same Windows account, opt in to the **Debug-only** development pipe and run the desktop:
 
 ```powershell
+$env:DOTNET_ENVIRONMENT = 'Development'
 dotnet run --project src/Vantrel.Security.Desktop
 ```
 
-The dashboard should change from **Disconnected** to **Connected** within ten seconds and show a heartbeat. Stop the service with Ctrl+C; the dashboard should return to **Disconnected**. The service process is independent of the desktop and supports graceful shutdown.
+The dashboard refreshes every ten seconds. It displays Connected or Disconnected, the service version, and its heartbeat and uptime. Protection always remains **Unavailable** in this build. Stop the interactive worker with Ctrl+C; the desktop should show Disconnected on its next refresh. The release desktop requires the installed service to be running and does not use the development bypass.
 
-`Microsoft.Extensions.Hosting.WindowsServices` enables the worker to run under Windows Service Control Manager when installed. Task 001 does not install it automatically. The status pipe currently uses Windows `CurrentUserOnly` access, so an installed service must run under the same user account as the desktop for status IPC. A service running as LocalSystem or LocalService will be inaccessible to a normal desktop session. This is an explicit foundation limitation; cross-account pipe access with a reviewed ACL belongs in a later task. Running the two processes as the same user requires no administrator privileges during development. Installing a Windows service is an administrator action.
+## Publish and manage the Windows Service
 
-## Limits and security
+`scripts/Publish-Service.ps1` publishes a framework-dependent `win-x64` executable into a unique ignored folder under `artifacts/service/win-x64` and writes its location to `latest-path.txt`. Publishing does **not** require Administrator privileges.
 
-- No malware protection, scan engine, firewall management, privileged operations, HTTP endpoint, telemetry, or personal data collection is implemented.
-- IPC uses the local machine pipe endpoint, a same-user access restriction, a fixed protocol version and request type, a 4 KiB message limit, and three-second connection and response timeouts. Invalid messages receive no status response.
-- Status reports only the service start time, heartbeat, version, and `Unavailable` protection state. Logs contain lifecycle, connection, and error events, without request payloads or personal data. Standard .NET logging and configuration are used.
-- The UI and service are development builds, not an installer. No application signing or production service ACL has been established.
+```powershell
+.\scripts\Publish-Service.ps1
+```
+
+Review the published executable and its displayed SHA-256 hash before installation. Open a **separate Windows PowerShell window as Administrator** for install, start, stop, restart, and uninstall. The scripts do not elevate themselves. Status can be queried from a normal window.
+
+```powershell
+.\scripts\Manage-Service.ps1 -Action Install
+.\scripts\Manage-Service.ps1 -Action Start
+.\scripts\Manage-Service.ps1 -Action Status
+.\scripts\Manage-Service.ps1 -Action Stop
+.\scripts\Manage-Service.ps1 -Action Restart
+.\scripts\Manage-Service.ps1 -Action Uninstall
+```
+
+Use `-WhatIf` to inspect a management action without changing the machine. Installation refuses an existing service or installation directory, checks for a .NET 9 runtime, and verifies the copied executable hash. It copies the published files into `Program Files\Vantrel Security\Service`, grants only SYSTEM and Administrators full control and LocalService read/execute, registers an Application Event Log source, and creates `VantrelSecurityService` with display name **Vantrel Security Service** under `NT AUTHORITY\LocalService`. Startup is manual so installation alone does not start a background process. Uninstall stops and removes that service, its dedicated installation directory, and its Event Log source. Historical Application log entries remain under Windows retention policy.
+
+These scripts are unsigned. If your PowerShell execution policy requires signed scripts, sign and review them under your organization's policy before running them. Do not weaken PowerShell policy just to run this development build. This machine's policy blocked direct script execution, so service installation was not automated here.
+
+For an `AllSigned` machine, [docs/SERVICE-MANUAL.md](docs/SERVICE-MANUAL.md) gives equivalent commands to type into a PowerShell session without changing execution policy.
+
+To inspect service logs after installation:
+
+```powershell
+Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'VantrelSecurityService' } -MaxEvents 20
+```
+
+The service writes lifecycle and error events to the bounded Windows Application Event Log. Interactive development uses console logging. Expected malformed requests and IPC errors are rate-limited to one warning per minute, without logging request bodies.
+
+## Current security boundary and limits
+
+The status pipe has an explicit non-inherited ACL: the service identity owns it; locally logged-on interactive users receive only data read/write, attribute read, permission read, and synchronization rights. They cannot create another pipe instance. Network and anonymous logons have no access rule. The service creates the first and only pipe instance and retains it until shutdown. The desktop connects to `.` with anonymous impersonation level, validates the typed versioned response, and in installed mode requires the Windows service to report Running. No HTTP listener or network port is opened. Messages are capped at 4 KiB and each connection has a three-second deadline.
+
+The ACL permits any locally interactive user to request the same non-sensitive status. Local users can still delay the single pipe instance for up to three seconds per connection, so this is not a general privileged-command channel. There is no installer signing, no installed-service validation on this development machine, and no protection engine. See [docs/SECURITY.md](docs/SECURITY.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

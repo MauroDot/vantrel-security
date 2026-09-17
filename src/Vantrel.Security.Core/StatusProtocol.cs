@@ -7,6 +7,7 @@ public static class StatusProtocol
     public const int Version = 1;
     public const int MaximumMessageBytes = 4096;
     public const string PipeName = "Vantrel.Security.Status.v1";
+    public const string ServiceName = "VantrelSecurityService";
 
     private sealed record Request(int ProtocolVersion, string Type);
     private sealed record Response(int ProtocolVersion, string Type, SecurityServiceStatus Status);

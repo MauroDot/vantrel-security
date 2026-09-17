@@ -43,6 +43,7 @@ public partial class MainWindow : Window
             var status = await _client.GetStatusAsync(cancellation.Token);
             if (cancellation.IsCancellationRequested) return;
             ServiceStatusText.Text = status is null ? "Disconnected" : "Connected";
+            ServiceVersionText.Text = status is null ? "Service version: —" : $"Service version: {status.Version}";
             ProtectionStatusText.Text = status?.Protection == ProtectionState.Protected ? "Protected" : "Unavailable";
             HeartbeatText.Text = status is null
                 ? "Start the service to view its heartbeat."
@@ -53,6 +54,7 @@ public partial class MainWindow : Window
         catch (Exception error)
         {
             ServiceStatusText.Text = "Disconnected";
+            ServiceVersionText.Text = "Service version: —";
             ProtectionStatusText.Text = "Unavailable";
             HeartbeatText.Text = "Status could not be read.";
             _logger.LogError(error, "Unexpected service status error");
