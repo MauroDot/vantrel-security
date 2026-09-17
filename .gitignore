@@ -1,0 +1,25 @@
+# .NET output
+**/bin/
+**/obj/
+artifacts/
+publish/
+TestResults/
+
+# IDE and local settings
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Local diagnostics and machine configuration
+logs/
+*.log
+*.log.*
+appsettings.Local.json
+appsettings.*.local.json
+*.pfx
+*.p12
+*.snk
