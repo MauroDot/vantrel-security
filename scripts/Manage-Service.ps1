@@ -78,9 +78,16 @@ switch ($Action) {
             throw 'Published output directory is a link or reparse point.'
         }
         if (-not (Test-Path -LiteralPath $publishedExecutable -PathType Leaf)) { throw "Missing published executable: $publishedExecutable" }
+        $runtimeConfigPath = Join-Path $publishDirectory 'Vantrel.Security.Service.runtimeconfig.json'
+        if (-not (Test-Path -LiteralPath $runtimeConfigPath -PathType Leaf)) { throw "Missing runtime configuration: $runtimeConfigPath" }
+        $runtimeConfig = Get-Content -LiteralPath $runtimeConfigPath -Raw | ConvertFrom-Json
+        $requiredFramework = $runtimeConfig.runtimeOptions.framework
+        if ($requiredFramework.name -ne 'Microsoft.NETCore.App') { throw 'Unexpected service runtime framework.' }
+        $requiredVersion = [Version]$requiredFramework.version
+        $runtimePattern = '^Microsoft\.NETCore\.App\s+' + [regex]::Escape("$($requiredVersion.Major).$($requiredVersion.Minor).")
         $runtimes = & dotnet --list-runtimes
-        if ($LASTEXITCODE -ne 0 -or -not ($runtimes | Where-Object { $_ -match '^Microsoft\.NETCore\.App 9\.' })) {
-            throw 'A .NET 9 runtime is required for this framework-dependent service. Check its patch level before installing.'
+        if ($LASTEXITCODE -ne 0 -or -not ($runtimes | Where-Object { $_ -match $runtimePattern })) {
+            throw "A .NET $($requiredVersion.Major).$($requiredVersion.Minor) runtime is required for this framework-dependent service. Check its patch level before installing."
         }
         $links = Get-ChildItem -LiteralPath $publishDirectory -Force -Recurse |
             Where-Object { ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 }

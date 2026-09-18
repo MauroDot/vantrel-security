@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Threading;
 using Microsoft.Extensions.Logging;
 using Vantrel.Security.Core;
+using Vantrel.Security.Infrastructure;
 
 namespace Vantrel.Security.Desktop;
 
@@ -18,7 +19,7 @@ public partial class MainWindow : Window
         _client = client;
         _logger = logger;
         InitializeComponent();
-        VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
+        VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
         _refreshTimer.Tick += async (_, _) => await RefreshStatusAsync();
         Loaded += async (_, _) =>
         {
@@ -46,8 +47,13 @@ public partial class MainWindow : Window
             ServiceVersionText.Text = status is null ? "Service version: —" : $"Service version: {status.Version}";
             ProtectionStatusText.Text = status?.Protection == ProtectionState.Protected ? "Protected" : "Unavailable";
             HeartbeatText.Text = status is null
-                ? "Start the service to view its heartbeat."
+                ? "Heartbeat unavailable until the status connection succeeds."
                 : $"Last heartbeat: {status.HeartbeatAtUtc.ToLocalTime():g}  ·  Uptime: {status.UptimeAt(DateTimeOffset.UtcNow):hh\\:mm\\:ss}";
+            var diagnostic = (_client as IStatusConnectionDiagnostics)?.LastDiagnostic;
+            ServiceDiagnosticText.Text = status is null && diagnostic is not null
+                ? $"Connection detail: {diagnostic}" : string.Empty;
+            ServiceDiagnosticText.Visibility = status is null && diagnostic is not null
+                ? Visibility.Visible : Visibility.Collapsed;
             _logger.LogInformation("Service status query completed: {Connected}", status is not null);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
@@ -57,6 +63,8 @@ public partial class MainWindow : Window
             ServiceVersionText.Text = "Service version: —";
             ProtectionStatusText.Text = "Unavailable";
             HeartbeatText.Text = "Status could not be read.";
+            ServiceDiagnosticText.Text = $"Connection detail: UnexpectedFailure at DesktopRefresh; exception={error.GetType().FullName}; HRESULT={error.HResult:X8}";
+            ServiceDiagnosticText.Visibility = Visibility.Visible;
             _logger.LogError(error, "Unexpected service status error");
         }
     }

@@ -22,7 +22,8 @@ public sealed class ServiceStatusStore
 
     private static ApplicationVersion GetVersion()
     {
-        var version = typeof(ServiceStatusStore).Assembly.GetName().Version ?? new Version(0, 1, 0);
+        var version = typeof(ServiceStatusStore).Assembly.GetName().Version
+            ?? throw new InvalidOperationException("Service assembly version is missing.");
         return new ApplicationVersion(version.Major, version.Minor, Math.Max(version.Build, 0));
     }
 

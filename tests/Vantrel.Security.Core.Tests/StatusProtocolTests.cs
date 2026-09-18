@@ -40,4 +40,20 @@ public sealed class StatusProtocolTests
         Assert.AreEqual(TimeSpan.Zero, status.UptimeAt(now.AddSeconds(-1)));
         Assert.AreEqual(TimeSpan.FromSeconds(3), status.UptimeAt(now.AddSeconds(3)));
     }
+
+    [TestMethod]
+    public void Response_diagnostics_distinguish_version_type_and_malformed_json()
+    {
+        Assert.IsFalse(StatusProtocol.TryReadResponse(
+            Encoding.UTF8.GetBytes("{\"ProtocolVersion\":2,\"Type\":\"status\"}"), out _, out var versionFailure));
+        Assert.AreEqual(StatusResponseFailure.UnsupportedVersion, versionFailure);
+
+        Assert.IsFalse(StatusProtocol.TryReadResponse(
+            Encoding.UTF8.GetBytes("{\"ProtocolVersion\":1,\"Type\":\"execute\"}"), out _, out var typeFailure));
+        Assert.AreEqual(StatusResponseFailure.UnexpectedType, typeFailure);
+
+        Assert.IsFalse(StatusProtocol.TryReadResponse(
+            Encoding.UTF8.GetBytes("not json"), out _, out var jsonFailure));
+        Assert.AreEqual(StatusResponseFailure.MalformedJson, jsonFailure);
+    }
 }

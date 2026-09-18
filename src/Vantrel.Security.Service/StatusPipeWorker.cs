@@ -10,6 +10,9 @@ public sealed class StatusPipeWorker : BackgroundService
     private readonly ILogger<StatusPipeWorker> _logger;
     private readonly string _pipeName;
     private DateTimeOffset _lastExpectedErrorLogUtc = DateTimeOffset.MinValue;
+    private string? _lastExpectedErrorKey;
+    private DateTimeOffset _lastConnectedLogUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastResponseConsumedLogUtc = DateTimeOffset.MinValue;
 
     public StatusPipeWorker(ServiceStatusStore store, ILogger<StatusPipeWorker> logger)
         : this(store, logger, StatusProtocol.PipeName) { }
@@ -25,41 +28,101 @@ public sealed class StatusPipeWorker : BackgroundService
     {
         // Keep the first and only pipe instance open for the whole service lifetime.
         // A pre-existing pipe causes startup to fail instead of serving a spoofed endpoint.
-        await using var pipe = StatusPipeServer.Create(_pipeName);
-        _logger.LogInformation("Local status pipe started");
+        NamedPipeServerStream? pipe = null;
         try
         {
+            try { pipe = StatusPipeServer.Create(_pipeName); }
+            catch (Exception error)
+            {
+                LogExpectedError("ServerCreationFailure", "CreateServer", error);
+                throw;
+            }
+            _logger.LogInformation("Local status pipe started");
             while (!stoppingToken.IsCancellationRequested)
             {
+                var accepted = false;
+                var stage = "WaitForConnection";
                 try
                 {
                     await pipe.WaitForConnectionAsync(stoppingToken);
-                    _logger.LogDebug("Local status client connected");
+                    accepted = true;
+                    LogProgress("ClientConnected", ref _lastConnectedLogUtc);
                     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                     timeout.CancelAfter(TimeSpan.FromSeconds(3));
+                    stage = "ReadRequest";
                     var request = await PipeMessages.ReadAsync(pipe, timeout.Token);
                     if (request is not null && StatusProtocol.IsValidRequest(request))
+                    {
+                        stage = "WriteResponse";
                         await PipeMessages.WriteAsync(pipe, StatusProtocol.CreateResponse(_store.Snapshot()), timeout.Token);
-                    else LogExpectedError("Rejected invalid status request");
+                        // DisconnectNamedPipe discards bytes the client has not read yet. The
+                        // client closes its end only after reading the complete response frame.
+                        stage = "WaitForClientClose";
+                        var trailing = new byte[1];
+                        if (await pipe.ReadAsync(trailing, timeout.Token) != 0)
+                            LogExpectedError("UnexpectedTrailingData", stage);
+                        else LogProgress("ResponseConsumed", ref _lastResponseConsumedLogUtc);
+                    }
+                    else LogExpectedError("InvalidRequest", stage);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                catch (OperationCanceledException) { LogExpectedError("Status client timed out"); }
-                catch (IOException) { LogExpectedError("Status pipe I/O error"); }
-                catch (UnauthorizedAccessException) { LogExpectedError("Status pipe access denied"); }
+                catch (OperationCanceledException error) { LogExpectedError("Timeout", stage, error); }
+                catch (IOException error) { LogExpectedError("PipeIoFailure", stage, error); }
+                catch (UnauthorizedAccessException error) { LogExpectedError("AccessDenied", stage, error); }
+                catch (Exception error)
+                {
+                    LogExpectedError("UnexpectedFailure", stage, error);
+                    throw;
+                }
                 finally
                 {
-                    if (pipe.IsConnected) pipe.Disconnect();
+                    // A peer that closes before sending data can put the managed stream in Broken
+                    // state while its native server instance still needs DisconnectNamedPipe.
+                    if (accepted)
+                    {
+                        try { pipe.Disconnect(); }
+                        catch (Exception error)
+                        {
+                            LogExpectedError("DisconnectFailure", "Disconnect", error);
+                            throw;
+                        }
+                    }
                 }
             }
         }
-        finally { _logger.LogInformation("Local status pipe stopped"); }
+        finally
+        {
+            if (pipe is not null)
+            {
+                try { await pipe.DisposeAsync(); }
+                catch (Exception error)
+                {
+                    LogExpectedError("DisposeFailure", "Dispose", error);
+                    throw;
+                }
+            }
+            _logger.LogInformation("Local status pipe stopped");
+        }
     }
 
-    private void LogExpectedError(string message)
+    private void LogExpectedError(string reason, string stage, Exception? error = null)
     {
         var now = DateTimeOffset.UtcNow;
-        if (now - _lastExpectedErrorLogUtc < TimeSpan.FromMinutes(1)) return;
+        var exceptionType = error?.GetType().FullName ?? "none";
+        var hresult = error?.HResult;
+        var key = $"{reason}:{stage}:{exceptionType}:{hresult}";
+        if (key == _lastExpectedErrorKey && now - _lastExpectedErrorLogUtc < TimeSpan.FromMinutes(1)) return;
+        _lastExpectedErrorKey = key;
         _lastExpectedErrorLogUtc = now;
-        _logger.LogWarning("{IpcEvent}; further expected IPC errors are suppressed for one minute", message);
+        _logger.LogWarning("Status IPC {Reason} at {Stage}; exception={ExceptionType}; HRESULT={HResult}; further matching IPC errors are suppressed for one minute",
+            reason, stage, exceptionType, hresult?.ToString("X8") ?? "none");
+    }
+
+    private void LogProgress(string stage, ref DateTimeOffset lastLogUtc)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now - lastLogUtc < TimeSpan.FromMinutes(1)) return;
+        lastLogUtc = now;
+        _logger.LogInformation("Status IPC {Stage}", stage);
     }
 }

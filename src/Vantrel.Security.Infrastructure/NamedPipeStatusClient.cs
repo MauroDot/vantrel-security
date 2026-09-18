@@ -2,23 +2,35 @@ using System.ComponentModel;
 using System.IO.Pipes;
 using System.Security.Principal;
 using System.ServiceProcess;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Vantrel.Security.Core;
 
 namespace Vantrel.Security.Infrastructure;
 
-public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient
+public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, IStatusConnectionDiagnostics
 {
     private readonly string _pipeName;
     private readonly TimeSpan _timeout;
     private readonly bool _allowDevelopmentServer;
+    private readonly ILogger<NamedPipeStatusClient> _logger;
+    private readonly object _diagnosticLock = new();
+    private long _lastDiagnosticTicks;
+    private string? _lastDiagnosticKey;
+    private StatusConnectionDiagnostic? _lastDiagnostic;
 
-    public NamedPipeStatusClient() : this(StatusProtocol.PipeName, TimeSpan.FromSeconds(3), AllowDevelopmentServer()) { }
+    public StatusConnectionDiagnostic? LastDiagnostic => Volatile.Read(ref _lastDiagnostic);
 
-    internal NamedPipeStatusClient(string pipeName, TimeSpan timeout, bool allowDevelopmentServer)
+    public NamedPipeStatusClient(ILogger<NamedPipeStatusClient> logger)
+        : this(StatusProtocol.PipeName, TimeSpan.FromSeconds(3), AllowDevelopmentServer(), logger) { }
+
+    internal NamedPipeStatusClient(string pipeName, TimeSpan timeout, bool allowDevelopmentServer,
+        ILogger<NamedPipeStatusClient>? logger = null)
     {
         _pipeName = pipeName;
         _timeout = timeout;
         _allowDevelopmentServer = allowDevelopmentServer;
+        _logger = logger ?? NullLogger<NamedPipeStatusClient>.Instance;
     }
 
     private static bool AllowDevelopmentServer()
@@ -35,41 +47,134 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Status IPC requires Windows.");
-        var installedServiceRunning = _pipeName == StatusProtocol.PipeName && IsInstalledServiceRunning();
-        if (!installedServiceRunning && !_allowDevelopmentServer) return null;
+        var serviceState = _pipeName == StatusProtocol.PipeName ? GetInstalledServiceState() : ServiceState.NotChecked;
+        var installedServiceRunning = serviceState == ServiceState.Running;
+        if (!installedServiceRunning && !_allowDevelopmentServer)
+        {
+            LogUnavailable(serviceState.ToString(), "ScmCheck");
+            return null;
+        }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(_timeout);
+        var stage = "CreateClient";
+        NamedPipeClientStream? pipe = null;
         try
         {
             // CurrentUserOnly is retained only for an explicitly opted-in Debug development run.
             var options = PipeOptions.Asynchronous |
                 (installedServiceRunning ? PipeOptions.None : PipeOptions.CurrentUserOnly);
-            await using var pipe = new NamedPipeClientStream(".", _pipeName, StatusPipeServer.ClientRights,
+            pipe = new NamedPipeClientStream(".", _pipeName, StatusPipeServer.ClientRights,
                 options, TokenImpersonationLevel.Anonymous, HandleInheritability.None);
+            stage = "Connect";
             await pipe.ConnectAsync(timeout.Token);
+            stage = "WriteRequest";
             await PipeMessages.WriteAsync(pipe, StatusProtocol.CreateRequest(), timeout.Token);
-            var response = await PipeMessages.ReadAsync(pipe, timeout.Token);
-            if (response is null || !StatusProtocol.TryReadResponse(response, out var status)) return null;
-            return installedServiceRunning && !IsInstalledServiceRunning() ? null : status;
+            stage = "ReadResponse";
+            var frame = await PipeMessages.ReadFrameAsync(pipe, timeout.Token);
+            if (frame.Message is null)
+            {
+                LogUnavailable(frame.Failure.ToString(), stage, bytesReceived: frame.BytesReceived);
+                return null;
+            }
+            stage = "ValidateResponse";
+            if (!StatusProtocol.TryReadResponse(frame.Message, out var status, out var failure))
+            {
+                LogUnavailable(failure.ToString(), stage, bytesReceived: frame.BytesReceived);
+                return null;
+            }
+            if (installedServiceRunning && GetInstalledServiceState() != ServiceState.Running)
+            {
+                LogUnavailable("ServiceStoppedAfterResponse", "ScmPostCheck");
+                return null;
+            }
+            Volatile.Write(ref _lastDiagnostic, null);
+            return status;
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return null; }
-        catch (IOException) { return null; }
-        catch (UnauthorizedAccessException) { return null; }
-        catch (System.TimeoutException) { return null; }
+        catch (OperationCanceledException error) when (!cancellationToken.IsCancellationRequested)
+        {
+            LogUnavailable("Timeout", stage, error);
+            return null;
+        }
+        catch (IOException error)
+        {
+            LogUnavailable(ClassifyIoError(error), stage, error);
+            return null;
+        }
+        catch (UnauthorizedAccessException error)
+        {
+            LogUnavailable("AccessDenied", stage, error);
+            return null;
+        }
+        catch (System.TimeoutException error)
+        {
+            LogUnavailable("Timeout", stage, error);
+            return null;
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            LogUnavailable("UnexpectedFailure", stage, error);
+            throw;
+        }
+        finally
+        {
+            if (pipe is not null)
+            {
+                try { await pipe.DisposeAsync(); }
+                catch (Exception error)
+                {
+                    LogUnavailable("DisposeFailure", "Dispose", error);
+                    throw;
+                }
+            }
+        }
     }
 
-    private static bool IsInstalledServiceRunning()
+    private enum ServiceState { NotChecked, Running, NotRunning, Missing, QueryFailed }
+
+    private static ServiceState GetInstalledServiceState()
     {
-        if (!OperatingSystem.IsWindows()) return false;
+        if (!OperatingSystem.IsWindows()) return ServiceState.QueryFailed;
         try
         {
             using var service = new ServiceController(StatusProtocol.ServiceName);
             service.Refresh();
-            return service.Status == ServiceControllerStatus.Running;
+            return service.Status == ServiceControllerStatus.Running ? ServiceState.Running : ServiceState.NotRunning;
         }
-        catch (InvalidOperationException) { return false; }
-        catch (Win32Exception) { return false; }
-        catch (UnauthorizedAccessException) { return false; }
+        catch (InvalidOperationException error) when (error.InnerException is Win32Exception { NativeErrorCode: 1060 })
+        {
+            return ServiceState.Missing;
+        }
+        catch (InvalidOperationException) { return ServiceState.QueryFailed; }
+        catch (Win32Exception) { return ServiceState.QueryFailed; }
+        catch (UnauthorizedAccessException) { return ServiceState.QueryFailed; }
+    }
+
+    private static string ClassifyIoError(IOException error) => (error.HResult & 0xFFFF) switch
+    {
+        2 or 3 => "PipeNotFound",
+        5 => "AccessDenied",
+        109 or 233 => "PipeDisconnected",
+        231 => "PipeBusy",
+        _ => "PipeIoFailure"
+    };
+
+    private void LogUnavailable(string reason, string stage, Exception? error = null, int? bytesReceived = null)
+    {
+        var now = DateTimeOffset.UtcNow.UtcTicks;
+        var exceptionType = error?.GetType().FullName ?? "none";
+        var hresult = error?.HResult;
+        var diagnostic = new StatusConnectionDiagnostic(_pipeName, reason, stage, exceptionType,
+            hresult?.ToString("X8") ?? "none", bytesReceived);
+        Volatile.Write(ref _lastDiagnostic, diagnostic);
+        var key = $"{reason}:{stage}:{exceptionType}:{hresult}:{bytesReceived}";
+        lock (_diagnosticLock)
+        {
+            if (key == _lastDiagnosticKey && now - _lastDiagnosticTicks < TimeSpan.TicksPerMinute) return;
+            _lastDiagnosticKey = key;
+            _lastDiagnosticTicks = now;
+        }
+        _logger.LogWarning("Local status unavailable: {Reason}; stage={Stage}; pipe={PipeName}; exception={ExceptionType}; HRESULT={HResult}; bytes={BytesReceived}",
+            reason, stage, _pipeName, exceptionType, diagnostic.HResult, bytesReceived?.ToString() ?? "none");
     }
 }

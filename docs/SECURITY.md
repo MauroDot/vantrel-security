@@ -1,6 +1,6 @@
 # Security design
 
-**Vantrel Security is pre-release software and is not a replacement for Microsoft Defender or another established endpoint protection product.** It performs no threat detection or protection today.
+**Vantrel Security is pre-release development software and must not be relied upon as the sole antivirus or endpoint protection solution.** It performs no threat detection or protection today.
 
 ## Trust boundaries
 
@@ -20,15 +20,15 @@ The desktop requests `TokenImpersonationLevel.Anonymous`, preventing the server 
 
 Protocol version 1 accepts only `get_status`. The service checks the request type and protocol version after a bounded 4 KiB read. It sends a typed response with service version, heartbeat, and start time. Both sides use asynchronous operations, cancellation, and timeouts. Unsupported, malformed, and oversized input receives no valid response. No CLR type names, commands, paths, or executable code are accepted over IPC.
 
-Installed-service lifecycle and error logs go to the Windows Application Event Log. The installer registers a dedicated source; Windows bounds the log size through its existing retention settings. Development mode uses console logging. Expected IPC warnings are rate-limited. Request payloads, secrets, tokens, and personal data are not logged.
+Installed-service lifecycle and error logs go to the Windows Application Event Log. The installer registers a dedicated source; Windows bounds the log size through its existing retention settings. Development mode uses console logging. IPC warnings are rate-limited by matching failure and include only a fixed lifecycle stage, reason, exception type, and numeric HRESULT. Connection and completed-response events are each limited to one per minute. The Release desktop shows sanitized SCM, connection, I/O, and protocol failure details in its service-status card, including pipe name and received byte count. Request payloads, secrets, tokens, and personal data are not logged or displayed.
 
 ## Known limits
 
 - Any local interactive user can request the same non-sensitive status and can briefly occupy the single pipe instance. No per-user policy or concurrency limit beyond the three-second connection deadline exists yet.
-- The installed service account and desktop IPC path have not been validated on this non-Administrator development session. Administrator validation steps are in the README.
-- The project still targets .NET 9, which is in maintenance support and reaches end of support in November 2026. This machine's .NET 9 runtime is 9.0.3, behind the current patch. Update the runtime before installed deployment and move the solution to .NET 10 LTS; see [Microsoft's support policy](https://dotnet.microsoft.com/en-us/platform/support/policy).
+- The Task 003 paired build passed installed-service validation on 2026-09-17. The service ran under LocalService; the non-elevated desktop stayed connected, showed the expected status, disconnected when the service stopped, and reconnected after restart. Fresh Event Log entries confirmed accepted clients and consumed responses. The single pipe instance and three-second deadline remain availability limits for local interactive clients.
+- The project targets .NET 10 LTS. This machine has SDK 10.0.401 and .NET/Windows Desktop runtimes 10.0.12. Keep target machines patched to the current supported .NET 10 runtime; see [Microsoft's support policy](https://dotnet.microsoft.com/en-us/platform/support/policy) and [DEPLOYMENT.md](DEPLOYMENT.md).
 - The binaries and PowerShell scripts are unsigned. Review and sign deployment artifacts before production use. The current scripts refuse an existing installation and do not silently elevate.
-- Application Event Log source creation and LocalService logging need a real installed-service test. The scripts do not change global Event Log retention settings.
+- Application Event Log source creation, LocalService logging, fresh pipe startup, client connections, and consumed responses were observed in the installed build. The scripts do not change global Event Log retention settings.
 - Future privileged features need explicit operations, caller authorization, audit design, and a fresh threat review. This status-only protocol must not be extended into generic command execution.
 
 No scanning, Defender or Firewall configuration, network monitoring, drivers, kernel components, telemetry, or personal information collection is implemented.

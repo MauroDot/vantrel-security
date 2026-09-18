@@ -1,8 +1,8 @@
 # Vantrel Security
 
-Vantrel Security is a planned native Windows security and system health application. Task 002 establishes a manageable Windows Service and local status communication with a non-elevated WPF desktop. It does **not** scan, monitor, block, or remove threats.
+Vantrel Security is a planned Windows security and system health application. The current prototype has a manageable Windows Service and local status communication with a non-elevated WPF desktop. It does **not** scan, monitor, block, or remove threats.
 
-**Vantrel Security is pre-release development software. It is not a replacement for Microsoft Defender or another established endpoint protection product.** Keep Defender and Windows Firewall enabled.
+**Vantrel Security is pre-release development software and must not be relied upon as the sole antivirus or endpoint protection solution.** Keep Defender and Windows Firewall enabled.
 
 ## Projects and requirements
 
@@ -15,7 +15,7 @@ Vantrel Security is a planned native Windows security and system health applicat
 | `tests/Vantrel.Security.Core.Tests` | Core protocol tests |
 | `tests/Vantrel.Security.Ipc.Tests` | Windows pipe and worker integration tests |
 
-Windows 11, the .NET 9 SDK, and Windows PowerShell 5.1 are used for development. A target machine running the framework-dependent service needs a current, supported .NET 9 runtime. The development machine has runtime 9.0.3; check the [official .NET support and patch policy](https://dotnet.microsoft.com/en-us/platform/support/policy) before any installed deployment. .NET 9 support ends in November 2026, so migration to .NET 10 LTS is recommended next. WinUI 3 tooling was not present in the development environment; WPF builds with the installed SDK.
+Windows 11 x64, .NET 10 LTS SDK 10.0.401, .NET and Windows Desktop runtimes 10.0.12, and Windows PowerShell 5.1 are the current development baseline. Core and its tests target `net10.0`; the WPF desktop, service, infrastructure, and IPC tests target `net10.0-windows`. The framework-dependent deployment needs current, supported .NET 10 runtime components on the target machine. Check [Microsoft's support policy](https://dotnet.microsoft.com/en-us/platform/support/policy) and [DEPLOYMENT.md](docs/DEPLOYMENT.md). `Directory.Build.props` sets version 0.1.0 for the solution, and `global.json` selects the .NET 10.0.400 SDK feature band with `latestPatch` roll-forward.
 
 ```powershell
 dotnet restore Vantrel.Security.sln
@@ -61,9 +61,9 @@ Review the published executable and its displayed SHA-256 hash before installati
 .\scripts\Manage-Service.ps1 -Action Uninstall
 ```
 
-Use `-WhatIf` to inspect a management action without changing the machine. Installation refuses an existing service or installation directory, checks for a .NET 9 runtime, and verifies the copied executable hash. It copies the published files into `Program Files\Vantrel Security\Service`, grants only SYSTEM and Administrators full control and LocalService read/execute, registers an Application Event Log source, and creates `VantrelSecurityService` with display name **Vantrel Security Service** under `NT AUTHORITY\LocalService`. Startup is manual so installation alone does not start a background process. Uninstall stops and removes that service, its dedicated installation directory, and its Event Log source. Historical Application log entries remain under Windows retention policy.
+Use `-WhatIf` to inspect a management action without changing the machine. Installation refuses an existing service or installation directory, checks for the runtime required by the published service, and verifies the copied executable hash. It copies the published files into `Program Files\Vantrel Security\Service`, grants only SYSTEM and Administrators full control and LocalService read/execute, registers an Application Event Log source, and creates `VantrelSecurityService` with display name **Vantrel Security Service** under `NT AUTHORITY\LocalService`. Startup is manual so installation alone does not start a background process. Uninstall stops and removes that service, its dedicated installation directory, and its Event Log source. Historical Application log entries remain under Windows retention policy.
 
-These scripts are unsigned. If your PowerShell execution policy requires signed scripts, sign and review them under your organization's policy before running them. Do not weaken PowerShell policy just to run this development build. This machine's policy blocked direct script execution, so service installation was not automated here.
+These scripts are unsigned. If your PowerShell execution policy requires signed scripts, sign and review them under your organization's policy before running them. Do not weaken PowerShell policy just to run this development build. This machine's policy blocked direct script execution, so service installation was not automated here. The script's runtime check confirms only the major/minor runtime required by the published service; check the patch level yourself before installation.
 
 For an `AllSigned` machine, [docs/SERVICE-MANUAL.md](docs/SERVICE-MANUAL.md) gives equivalent commands to type into a PowerShell session without changing execution policy.
 
@@ -73,10 +73,10 @@ To inspect service logs after installation:
 Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'VantrelSecurityService' } -MaxEvents 20
 ```
 
-The service writes lifecycle and error events to the bounded Windows Application Event Log. Interactive development uses console logging. Expected malformed requests and IPC errors are rate-limited to one warning per minute, without logging request bodies.
+The service writes lifecycle and error events to the bounded Windows Application Event Log. Interactive development uses console logging. IPC warnings include a safe lifecycle stage, exception type, and HRESULT and are rate-limited by matching failure; request bodies are not logged. The Release WPF desktop shows a sanitized connection detail on its service-status card because a Windows GUI process has no reliable visible console output.
 
 ## Current security boundary and limits
 
 The status pipe has an explicit non-inherited ACL: the service identity owns it; locally logged-on interactive users receive only data read/write, attribute read, permission read, and synchronization rights. They cannot create another pipe instance. Network and anonymous logons have no access rule. The service creates the first and only pipe instance and retains it until shutdown. The desktop connects to `.` with anonymous impersonation level, validates the typed versioned response, and in installed mode requires the Windows service to report Running. No HTTP listener or network port is opened. Messages are capped at 4 KiB and each connection has a three-second deadline.
 
-The ACL permits any locally interactive user to request the same non-sensitive status. Local users can still delay the single pipe instance for up to three seconds per connection, so this is not a general privileged-command channel. There is no installer signing, no installed-service validation on this development machine, and no protection engine. See [docs/SECURITY.md](docs/SECURITY.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The ACL permits any locally interactive user to request the same non-sensitive status. Local users can still delay the single pipe instance for up to three seconds per connection, so this is not a general privileged-command channel. **Task 003 installed-service validation passed on 2026-09-17:** the LocalService service remained Running; the non-elevated Release desktop showed Connected, version 0.1.0, a live heartbeat, advancing uptime, and Protection Status Unavailable. It showed Disconnected when the service stopped and reconnected automatically after restart. Fresh Application events recorded pipe startup, client connections, and consumed responses. There is no installer, code signing, or protection engine. See [docs/SECURITY.md](docs/SECURITY.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), and [docs/SERVICE-MANUAL.md](docs/SERVICE-MANUAL.md).
