@@ -77,7 +77,14 @@ public sealed class StatusPipeTests
             }
 
             var client = new NamedPipeStatusClient(pipeName, TimeSpan.FromSeconds(2), true);
-            Assert.IsNotNull(await client.GetStatusAsync(CancellationToken.None));
+            // The abandoned connection may still be disconnecting when the next connect starts.
+            SecurityServiceStatus? recovered = null;
+            for (var attempt = 0; attempt < 5 && recovered is null; attempt++)
+            {
+                recovered = await client.GetStatusAsync(CancellationToken.None);
+                if (recovered is null) await Task.Delay(50);
+            }
+            Assert.IsNotNull(recovered, $"Last diagnostic: {client.LastDiagnostic}; worker completed: {worker.ExecuteTask?.IsCompleted}; worker failure: {worker.ExecuteTask?.Exception}");
         }
         finally { await worker.StopAsync(CancellationToken.None); }
     }

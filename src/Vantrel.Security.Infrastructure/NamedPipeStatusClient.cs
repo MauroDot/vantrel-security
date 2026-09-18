@@ -8,7 +8,7 @@ using Vantrel.Security.Core;
 
 namespace Vantrel.Security.Infrastructure;
 
-public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, IStatusConnectionDiagnostics
+public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISystemHealthClient, IStatusConnectionDiagnostics
 {
     private readonly string _pipeName;
     private readonly TimeSpan _timeout;
@@ -43,7 +43,27 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, IStatu
 #endif
     }
 
-    public async Task<SecurityServiceStatus?> GetStatusAsync(CancellationToken cancellationToken)
+    public Task<SecurityServiceStatus?> GetStatusAsync(CancellationToken cancellationToken) =>
+        QueryAsync(StatusProtocol.CreateRequest(), ReadStatus, cancellationToken);
+
+    public Task<SystemHealthSnapshot?> GetSystemHealthAsync(CancellationToken cancellationToken) =>
+        QueryAsync(StatusProtocol.CreateSystemHealthRequest(), ReadHealth, cancellationToken);
+
+    private static (SecurityServiceStatus?, StatusResponseFailure) ReadStatus(byte[] frame)
+    {
+        StatusProtocol.TryReadResponse(frame, out var status, out var failure);
+        return (status, failure);
+    }
+
+    private static (SystemHealthSnapshot?, StatusResponseFailure) ReadHealth(byte[] frame)
+    {
+        StatusProtocol.TryReadSystemHealthResponse(frame, out var health, out var failure);
+        return (health, failure);
+    }
+
+    private async Task<T?> QueryAsync<T>(byte[] request,
+        Func<byte[], (T? Value, StatusResponseFailure Failure)> readResponse,
+        CancellationToken cancellationToken) where T : class
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Status IPC requires Windows.");
@@ -69,7 +89,7 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, IStatu
             stage = "Connect";
             await pipe.ConnectAsync(timeout.Token);
             stage = "WriteRequest";
-            await PipeMessages.WriteAsync(pipe, StatusProtocol.CreateRequest(), timeout.Token);
+            await PipeMessages.WriteAsync(pipe, request, timeout.Token);
             stage = "ReadResponse";
             var frame = await PipeMessages.ReadFrameAsync(pipe, timeout.Token);
             if (frame.Message is null)
@@ -78,7 +98,8 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, IStatu
                 return null;
             }
             stage = "ValidateResponse";
-            if (!StatusProtocol.TryReadResponse(frame.Message, out var status, out var failure))
+            var (value, failure) = readResponse(frame.Message);
+            if (value is null)
             {
                 LogUnavailable(failure.ToString(), stage, bytesReceived: frame.BytesReceived);
                 return null;
@@ -89,7 +110,7 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, IStatu
                 return null;
             }
             Volatile.Write(ref _lastDiagnostic, null);
-            return status;
+            return value;
         }
         catch (OperationCanceledException error) when (!cancellationToken.IsCancellationRequested)
         {

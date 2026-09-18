@@ -21,7 +21,10 @@ else
 }
 builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(5));
 builder.Services.AddSingleton<ServiceStatusStore>();
+builder.Services.AddSingleton<SystemHealthStore>();
+builder.Services.AddSingleton<WindowsSystemHealthSource>();
 builder.Services.AddHostedService<HeartbeatWorker>();
+builder.Services.AddHostedService<SystemHealthWorker>();
 builder.Services.AddHostedService<StatusPipeWorker>();
 
 var host = builder.Build();

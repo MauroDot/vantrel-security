@@ -6,7 +6,7 @@
 
 - The WPF desktop runs as a normal user. It is not granted service-management or administrator rights.
 - The installed worker runs as `NT AUTHORITY\LocalService`, a built-in account with minimal local privileges and anonymous network credentials. Its installed files are copied to an Administrator-controlled Program Files directory. It needs read/execute access there, not write access. See [Microsoft's LocalService account description](https://learn.microsoft.com/en-us/windows/win32/services/localservice-account).
-- The named pipe crosses from an untrusted interactive user process into the service. All requests are untrusted, even when the Windows ACL permits the connection. A service-status request provides no privileged action.
+- The named pipe crosses from an untrusted interactive user process into the service. All requests are untrusted, even when the Windows ACL permits the connection. Status and System Health requests provide no privileged action.
 
 ## Named pipe controls
 
@@ -18,17 +18,18 @@ The desktop requests `TokenImpersonationLevel.Anonymous`, preventing the server 
 
 ## Message handling and logging
 
-Protocol version 1 accepts only `get_status`. The service checks the request type and protocol version after a bounded 4 KiB read. It sends a typed response with service version, heartbeat, and start time. Both sides use asynchronous operations, cancellation, and timeouts. Unsupported, malformed, and oversized input receives no valid response. No CLR type names, commands, paths, or executable code are accepted over IPC.
+Protocol version 1 accepts only the fixed `get_status` and `get_system_health` types. The service checks the request type and protocol version after a bounded 4 KiB read. The unchanged status response contains service version, heartbeat, and start time. The health response contains a collection timestamp and coarse Windows version/build, elapsed system uptime, and system-volume total/free byte counts; each unavailable value is null. No volume path, label, serial number, user detail, or arbitrary client-selected target crosses the pipe. The service collects and caches the sample outside the pipe loop. Both sides use asynchronous operations, cancellation, and timeouts. Unsupported, malformed, and oversized input receives no valid response. No CLR type names, commands, paths, or executable code are accepted over IPC.
 
 Installed-service lifecycle and error logs go to the Windows Application Event Log. The installer registers a dedicated source; Windows bounds the log size through its existing retention settings. Development mode uses console logging. IPC warnings are rate-limited by matching failure and include only a fixed lifecycle stage, reason, exception type, and numeric HRESULT. Connection and completed-response events are each limited to one per minute. The Release desktop shows sanitized SCM, connection, I/O, and protocol failure details in its service-status card, including pipe name and received byte count. Request payloads, secrets, tokens, and personal data are not logged or displayed.
 
 ## Known limits
 
-- Any local interactive user can request the same non-sensitive status and can briefly occupy the single pipe instance. No per-user policy or concurrency limit beyond the three-second connection deadline exists yet.
+- Any local interactive user can request the same non-sensitive status and coarse machine-health values and can briefly occupy the single pipe instance. No per-user policy or concurrency limit beyond the three-second connection deadline exists yet.
+- Windows version/build is informational, not a patch-compliance judgment. System uptime and disk space do not indicate protection state. Sampling failures remain unavailable, and samples over two minutes old are marked stale in the desktop. Task 004 installed LocalService validation passed on 2026-09-18: the non-elevated desktop received real values and a sample timestamp, disconnected when the service stopped, then reconnected to a newer sample in the same process after restart.
 - The Task 003 paired build passed installed-service validation on 2026-09-17. The service ran under LocalService; the non-elevated desktop stayed connected, showed the expected status, disconnected when the service stopped, and reconnected after restart. Fresh Event Log entries confirmed accepted clients and consumed responses. The single pipe instance and three-second deadline remain availability limits for local interactive clients.
 - The project targets .NET 10 LTS. This machine has SDK 10.0.401 and .NET/Windows Desktop runtimes 10.0.12. Keep target machines patched to the current supported .NET 10 runtime; see [Microsoft's support policy](https://dotnet.microsoft.com/en-us/platform/support/policy) and [DEPLOYMENT.md](DEPLOYMENT.md).
 - The binaries and PowerShell scripts are unsigned. Review and sign deployment artifacts before production use. The current scripts refuse an existing installation and do not silently elevate.
 - Application Event Log source creation, LocalService logging, fresh pipe startup, client connections, and consumed responses were observed in the installed build. The scripts do not change global Event Log retention settings.
-- Future privileged features need explicit operations, caller authorization, audit design, and a fresh threat review. This status-only protocol must not be extended into generic command execution.
+- Future privileged features need explicit operations, caller authorization, audit design, and a fresh threat review. This read-only status and health protocol must not be extended into generic command execution.
 
-No scanning, Defender or Firewall configuration, network monitoring, drivers, kernel components, telemetry, or personal information collection is implemented.
+No scanning, Defender or Firewall configuration, security-provider query, network monitoring, drivers, kernel components, remediation, or personal information collection is implemented. System Health is limited to the three read-only local machine values listed above.

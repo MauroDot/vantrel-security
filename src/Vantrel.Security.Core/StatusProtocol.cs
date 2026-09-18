@@ -10,7 +10,8 @@ public enum StatusResponseFailure
     MalformedJson,
     UnsupportedVersion,
     UnexpectedType,
-    InvalidStatus
+    InvalidStatus,
+    InvalidHealth
 }
 
 public static class StatusProtocol
@@ -22,18 +23,87 @@ public static class StatusProtocol
 
     private sealed record Request(int ProtocolVersion, string Type);
     private sealed record Response(int ProtocolVersion, string Type, SecurityServiceStatus Status);
+    private sealed record HealthResponse(int ProtocolVersion, string Type, SystemHealthSnapshot Health);
+
+    public enum RequestKind { Invalid, Status, SystemHealth }
 
     public static byte[] CreateRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_status"));
 
-    public static bool IsValidRequest(ReadOnlySpan<byte> utf8)
+    public static byte[] CreateSystemHealthRequest() =>
+        JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_system_health"));
+
+    public static bool IsValidRequest(ReadOnlySpan<byte> utf8) => ReadRequestKind(utf8) == RequestKind.Status;
+
+    public static RequestKind ReadRequestKind(ReadOnlySpan<byte> utf8)
     {
-        if (utf8.Length is 0 or > MaximumMessageBytes) return false;
+        if (utf8.Length is 0 or > MaximumMessageBytes) return RequestKind.Invalid;
         try
         {
             var request = JsonSerializer.Deserialize<Request>(utf8);
-            return request is { ProtocolVersion: Version, Type: "get_status" };
+            if (request?.ProtocolVersion != Version) return RequestKind.Invalid;
+            return request.Type switch
+            {
+                "get_status" => RequestKind.Status,
+                "get_system_health" when HasOnlyFixedRequestFields(utf8) => RequestKind.SystemHealth,
+                _ => RequestKind.Invalid
+            };
         }
-        catch (JsonException) { return false; }
+        catch (JsonException) { return RequestKind.Invalid; }
+    }
+
+    private static bool HasOnlyFixedRequestFields(ReadOnlySpan<byte> utf8)
+    {
+        using var document = JsonDocument.Parse(utf8.ToArray());
+        if (document.RootElement.ValueKind != JsonValueKind.Object) return false;
+        var versionCount = 0;
+        var typeCount = 0;
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            if (property.NameEquals("ProtocolVersion")) versionCount++;
+            else if (property.NameEquals("Type")) typeCount++;
+            else return false;
+        }
+        return versionCount == 1 && typeCount == 1;
+    }
+
+    public static byte[] CreateSystemHealthResponse(SystemHealthSnapshot health) =>
+        JsonSerializer.SerializeToUtf8Bytes(new HealthResponse(Version, "system_health", health));
+
+    public static bool TryReadSystemHealthResponse(ReadOnlySpan<byte> utf8, out SystemHealthSnapshot? health,
+        out StatusResponseFailure failure)
+    {
+        health = null;
+        failure = utf8.Length switch
+        {
+            0 => StatusResponseFailure.Empty,
+            > MaximumMessageBytes => StatusResponseFailure.Oversized,
+            _ => StatusResponseFailure.None
+        };
+        if (failure != StatusResponseFailure.None) return false;
+        try
+        {
+            var response = JsonSerializer.Deserialize<HealthResponse>(utf8);
+            if (response is null) { failure = StatusResponseFailure.MalformedJson; return false; }
+            if (response.ProtocolVersion != Version) { failure = StatusResponseFailure.UnsupportedVersion; return false; }
+            if (response.Type != "system_health") { failure = StatusResponseFailure.UnexpectedType; return false; }
+            var value = response.Health;
+            if (value is null || value.CollectedAtUtc == default ||
+                value.CollectedAtUtc > DateTimeOffset.UtcNow.AddMinutes(1) ||
+                value.WindowsVersion is { Length: > 64 } ||
+                (value.WindowsVersion is not null &&
+                    (string.IsNullOrWhiteSpace(value.WindowsVersion) || value.WindowsVersion.Any(char.IsControl))) ||
+                value.SystemUptimeSeconds is < 0 ||
+                value.SystemVolumeTotalBytes is <= 0 || value.SystemVolumeFreeBytes is < 0 ||
+                (value.SystemVolumeTotalBytes is null) != (value.SystemVolumeFreeBytes is null) ||
+                value.SystemVolumeFreeBytes > value.SystemVolumeTotalBytes)
+            {
+                failure = StatusResponseFailure.InvalidHealth;
+                return false;
+            }
+            health = value;
+            return true;
+        }
+        catch (JsonException) { failure = StatusResponseFailure.MalformedJson; return false; }
     }
 
     public static byte[] CreateResponse(SecurityServiceStatus status) =>

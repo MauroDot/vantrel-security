@@ -18,6 +18,8 @@ public partial class App : Application
         {
             var builder = Host.CreateApplicationBuilder(e.Args);
             builder.Services.AddSingleton<ISecurityServiceStatusClient, NamedPipeStatusClient>();
+            builder.Services.AddSingleton<ISystemHealthClient>(services =>
+                (ISystemHealthClient)services.GetRequiredService<ISecurityServiceStatusClient>());
             builder.Services.AddSingleton<MainWindow>();
             _host = builder.Build();
             await _host.StartAsync();

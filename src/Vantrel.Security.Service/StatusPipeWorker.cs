@@ -7,6 +7,7 @@ namespace Vantrel.Security.Service;
 public sealed class StatusPipeWorker : BackgroundService
 {
     private readonly ServiceStatusStore _store;
+    private readonly SystemHealthStore _healthStore;
     private readonly ILogger<StatusPipeWorker> _logger;
     private readonly string _pipeName;
     private DateTimeOffset _lastExpectedErrorLogUtc = DateTimeOffset.MinValue;
@@ -14,12 +15,17 @@ public sealed class StatusPipeWorker : BackgroundService
     private DateTimeOffset _lastConnectedLogUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastResponseConsumedLogUtc = DateTimeOffset.MinValue;
 
-    public StatusPipeWorker(ServiceStatusStore store, ILogger<StatusPipeWorker> logger)
-        : this(store, logger, StatusProtocol.PipeName) { }
+    public StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ILogger<StatusPipeWorker> logger)
+        : this(store, healthStore, logger, StatusProtocol.PipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, ILogger<StatusPipeWorker> logger, string pipeName)
+        : this(store, new SystemHealthStore(), logger, pipeName) { }
+
+    internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore,
+        ILogger<StatusPipeWorker> logger, string pipeName)
     {
         _store = store;
+        _healthStore = healthStore;
         _logger = logger;
         _pipeName = pipeName;
     }
@@ -51,10 +57,15 @@ public sealed class StatusPipeWorker : BackgroundService
                     timeout.CancelAfter(TimeSpan.FromSeconds(3));
                     stage = "ReadRequest";
                     var request = await PipeMessages.ReadAsync(pipe, timeout.Token);
-                    if (request is not null && StatusProtocol.IsValidRequest(request))
+                    var kind = request is null ? StatusProtocol.RequestKind.Invalid :
+                        StatusProtocol.ReadRequestKind(request);
+                    if (kind != StatusProtocol.RequestKind.Invalid)
                     {
                         stage = "WriteResponse";
-                        await PipeMessages.WriteAsync(pipe, StatusProtocol.CreateResponse(_store.Snapshot()), timeout.Token);
+                        var response = kind == StatusProtocol.RequestKind.Status
+                            ? StatusProtocol.CreateResponse(_store.Snapshot())
+                            : StatusProtocol.CreateSystemHealthResponse(_healthStore.Snapshot());
+                        await PipeMessages.WriteAsync(pipe, response, timeout.Token);
                         // DisconnectNamedPipe discards bytes the client has not read yet. The
                         // client closes its end only after reading the complete response frame.
                         stage = "WaitForClientClose";

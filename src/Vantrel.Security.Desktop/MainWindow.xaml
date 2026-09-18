@@ -92,6 +92,22 @@
                         </Border>
                     </Grid>
                 </StackPanel>
+                <Border x:Name="SystemHealthPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14"
+                        Padding="26" BorderBrush="#29415B" BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock Text="SYSTEM HEALTH" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="HealthStateText" Text="Unavailable — checking service" FontSize="20"
+                                   FontWeight="SemiBold" Margin="0,12,0,10" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="HealthDiagnosticText" Foreground="#D5B77E" FontSize="11"
+                                   Margin="0,0,0,10" TextWrapping="Wrap" Visibility="Collapsed"/>
+                        <TextBlock x:Name="HealthSampleText" Text="Sample: unavailable" Foreground="#A8B9C9" Margin="0,0,0,18"/>
+                        <TextBlock x:Name="HealthWindowsText" Text="Windows version/build: Unavailable" Margin="0,0,0,12"/>
+                        <TextBlock x:Name="HealthUptimeText" Text="Elapsed since system start: Unavailable" Margin="0,0,0,12"/>
+                        <TextBlock x:Name="HealthDiskText" Text="Windows system volume: Unavailable" Margin="0,0,0,18"/>
+                        <TextBlock Text="Informational system data only. This does not assess updates or protection."
+                                   Foreground="#A8B9C9" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
                 <Border x:Name="PlaceholderPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14" Padding="26" BorderBrush="#29415B" BorderThickness="1">
                     <TextBlock x:Name="PlaceholderText" TextWrapping="Wrap" FontSize="16" Foreground="#B9CBDC"/>
                 </Border>
