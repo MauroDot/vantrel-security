@@ -101,21 +101,28 @@ public sealed class WindowsSystemHealthSource
         SecurityException or ArgumentException or PlatformNotSupportedException or InvalidOperationException;
 }
 
-public sealed class SystemHealthWorker(SystemHealthStore store, WindowsSystemHealthSource source,
+public sealed class SystemHealthWorker(SystemHealthStore store, ActivityStore activityStore, WindowsSystemHealthSource source,
     ILogger<SystemHealthWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Sampling stays outside the single-client pipe loop. A failed value remains explicit null.
         await Task.Yield();
-        store.Update(source.Collect());
+        Sample();
         logger.LogInformation("System health sampling started");
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
         try
         {
-            while (await timer.WaitForNextTickAsync(stoppingToken)) store.Update(source.Collect());
+            while (await timer.WaitForNextTickAsync(stoppingToken)) Sample();
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
         logger.LogInformation("System health sampling stopped");
+    }
+
+    private void Sample()
+    {
+        var sample = source.Collect();
+        activityStore.Update(sample);
+        store.Update(sample);
     }
 }

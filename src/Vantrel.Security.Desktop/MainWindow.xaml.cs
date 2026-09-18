@@ -11,15 +11,19 @@ public partial class MainWindow : Window
 {
     private readonly ISecurityServiceStatusClient _client;
     private readonly ISystemHealthClient _healthClient;
+    private readonly IActivityClient _activityClient;
     private readonly ILogger<MainWindow> _logger;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private CancellationTokenSource? _refreshCancellation;
+    private bool _activityWasDisconnected;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
+        IActivityClient activityClient,
         ILogger<MainWindow> logger)
     {
         _client = client;
         _healthClient = healthClient;
+        _activityClient = activityClient;
         _logger = logger;
         InitializeComponent();
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
@@ -63,6 +67,13 @@ public partial class MainWindow : Window
                 if (cancellation.IsCancellationRequested) return;
                 RenderSystemHealth(health, status is not null);
             }
+            if (status is null) _activityWasDisconnected = true;
+            if (ActivityPanel.Visibility == Visibility.Visible)
+            {
+                var activity = status is null ? null : await _activityClient.GetActivityAsync(cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                RenderActivity(activity, status is not null);
+            }
             _logger.LogInformation("Service status query completed: {Connected}", status is not null);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
@@ -75,9 +86,56 @@ public partial class MainWindow : Window
             ServiceDiagnosticText.Text = $"Connection detail: UnexpectedFailure at DesktopRefresh; exception={error.GetType().FullName}; HRESULT={error.HResult:X8}";
             ServiceDiagnosticText.Visibility = Visibility.Visible;
             if (SystemHealthPanel.Visibility == Visibility.Visible) RenderSystemHealth(null, false);
+            _activityWasDisconnected = true;
+            if (ActivityPanel.Visibility == Visibility.Visible) RenderActivity(null, false);
             _logger.LogError(error, "Unexpected service status error");
         }
     }
+
+    private void RenderActivity(ActivitySnapshot? activity, bool connected)
+    {
+        var state = ActivityPresentation.State(activity, connected, DateTimeOffset.UtcNow,
+            _activityWasDisconnected);
+        ActivityStateText.Text = state switch
+        {
+            ActivityDisplayState.Disconnected => "Disconnected - service unavailable",
+            ActivityDisplayState.Unavailable => "Unavailable - no Activity sample or unsupported service",
+            ActivityDisplayState.Stale => "Stale - last sample is over two minutes old",
+            ActivityDisplayState.Empty => "No observed changes since service start",
+            ActivityDisplayState.Recovered => "Recovered - current observations from the service",
+            _ => "Current observations"
+        };
+        if (state == ActivityDisplayState.Disconnected) _activityWasDisconnected = true;
+        else if (state is ActivityDisplayState.Current or ActivityDisplayState.Recovered)
+            _activityWasDisconnected = false;
+        // A disconnected desktop must not retain observations as current evidence.
+        var visible = connected ? activity : null;
+        ActivitySessionText.Text = visible is null ? "Service start: unavailable" :
+            $"Service start: {visible.ServiceStartedAtUtc.ToLocalTime():G}";
+        ActivitySampleText.Text = visible is null ? "Sampled through: unavailable" :
+            $"Sampled through: {visible.SampledThroughUtc.ToLocalTime():G}";
+        ActivityEntries.ItemsSource = visible?.Entries.Select(FormatObservation).ToArray() ?? [];
+    }
+
+    private static string FormatObservation(ActivityObservation entry)
+    {
+        var category = entry.Category == ActivityCategory.Antivirus
+            ? "Windows-reported antivirus health" : "Windows-reported firewall health";
+        var current = FormatObservedHealth(entry.CurrentState);
+        var description = entry.IsInitial
+            ? $"Initial observation: {current}"
+            : $"Observed change: {FormatObservedHealth(entry.PreviousState!.Value)} to {current}";
+        return $"{category} - {description} - observed at {entry.ObservedAtUtc.ToLocalTime():G}";
+    }
+
+    private static string FormatObservedHealth(ObservedHealth health) => health switch
+    {
+        ObservedHealth.Good => "Good",
+        ObservedHealth.NotMonitored => "Not monitored",
+        ObservedHealth.Poor => "Poor",
+        ObservedHealth.Snoozed => "Snoozed",
+        _ => "Unavailable"
+    };
 
     private void RenderSystemHealth(SystemHealthSnapshot? health, bool connected)
     {
@@ -133,8 +191,9 @@ public partial class MainWindow : Window
         SectionTitle.Text = section;
         DashboardPanel.Visibility = section == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
         SystemHealthPanel.Visibility = section == "System Health" ? Visibility.Visible : Visibility.Collapsed;
-        PlaceholderPanel.Visibility = section is "Dashboard" or "System Health" ? Visibility.Collapsed : Visibility.Visible;
+        ActivityPanel.Visibility = section == "Activity" ? Visibility.Visible : Visibility.Collapsed;
+        PlaceholderPanel.Visibility = section is "Dashboard" or "System Health" or "Activity" ? Visibility.Collapsed : Visibility.Visible;
         PlaceholderText.Text = $"{section} will be available in a future release.";
-        if (section == "System Health") await RefreshStatusAsync();
+        if (section is "System Health" or "Activity") await RefreshStatusAsync();
     }
 }

@@ -112,6 +112,20 @@
                                    Foreground="#A8B9C9" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
+                <Border x:Name="ActivityPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14"
+                        Padding="26" BorderBrush="#29415B" BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock Text="WINDOWS-REPORTED HEALTH OBSERVATIONS" Foreground="#9CB4CA"
+                                   FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="ActivityStateText" Text="Loading - checking service" FontSize="20"
+                                   FontWeight="SemiBold" Margin="0,12,0,10" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="ActivitySessionText" Text="Service start: unavailable" Margin="0,0,0,8"/>
+                        <TextBlock x:Name="ActivitySampleText" Text="Sampled through: unavailable" Margin="0,0,0,18"/>
+                        <ItemsControl x:Name="ActivityEntries" Margin="0,0,0,18"/>
+                        <TextBlock Text="Observed at is the sample time, not the time Windows changed state. This memory-only history resets when the service restarts. These are not Vantrel detections or protection events."
+                                   Foreground="#A8B9C9" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
                 <Border x:Name="PlaceholderPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14" Padding="26" BorderBrush="#29415B" BorderThickness="1">
                     <TextBlock x:Name="PlaceholderText" TextWrapping="Wrap" FontSize="16" Foreground="#B9CBDC"/>
                 </Border>

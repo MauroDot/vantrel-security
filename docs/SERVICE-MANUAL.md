@@ -2,7 +2,7 @@
 
 Vantrel Security is pre-release development software and must not be relied upon as the sole antivirus or endpoint protection solution.
 
-**Current status (2026-09-18): Tasks 003–006 passed installed-service validation.** The guarded Task 006 upgrade verified the Task 005 baseline and kept `VantrelSecurityService` under LocalService. It restarted with PID changing from 37588 to 2416; fresh pipe and health-sampling startup checks passed. The hash-verified desktop ran non-elevated, showed Connected with a current sample and Windows-reported antivirus and firewall health both Good, and kept Vantrel Protection Status Unavailable. It stated that firewall profiles and rules had not been audited. The same desktop changed to Disconnected on service stop and reconnected to a newer sample after restart. Confirm any other target machine has a current .NET 10 runtime and Windows Desktop Runtime.
+**Current status (2026-09-18): Tasks 003–007 passed installed-service validation.** The guarded Task 007 upgrade verified the exact Task 006 baseline, kept `VantrelSecurityService` under LocalService, and restarted it with PID changing from 34732 to 36136. The matching non-elevated desktop showed two initial Good Windows-reported health observations. Stopping the service cleared Activity and showed Disconnected; restarting it reconnected the same desktop to a fresh session without previous-session entries. Vantrel Protection Status remains Unavailable. Confirm any other target machine has a current .NET 10 runtime and Windows Desktop Runtime.
 
 Use this procedure when unsigned `.ps1` files cannot run under the machine's PowerShell policy. It does not change execution policy. Review the source and publish output first. **Installation, start, stop, restart, and removal require an Administrator PowerShell window.** Querying status and launching the desktop do not.
 
@@ -482,6 +482,119 @@ Get-WinEvent -FilterHashtable @{ LogName='Application'; ProviderName='VantrelSec
 ```
 
 Do not stop, disable, or reconfigure Windows Firewall or Windows Security Center to manufacture test states. Task 006 installed validation passed on 2026-09-18: the LocalService service and non-elevated desktop returned Good for antivirus and firewall health, Vantrel Protection Status stayed Unavailable, and the same desktop reconnected to a newer sample after service restart. Other WSC states and failure paths were verified with injected automated tests.
+
+## Task 007 Activity update and validation
+
+The paired framework-dependent Release `win-x64` output is in ignored `artifacts/task007-activity-20260918/service` and `artifacts/task007-activity-20260918/desktop`. This upgrade requires the **exact validated Task 006 installed baseline** and a Running LocalService service. Run the following as **one uninterrupted block** in Administrator Windows PowerShell 5.1. It checks the installed baseline and published payload, then replaces only three changed Vantrel-owned DLLs. It leaves the registered Event Log source, `System.Diagnostics.EventLog.Messages.dll`, service executable, and metadata files untouched. If a guard fails, inspect the installation; this block does not accept a partly updated baseline.
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$repository = 'C:\Users\tmaur\VANTREL SECURITY'
+$name = 'VantrelSecurityService'
+$source = (Resolve-Path -LiteralPath (Join-Path $repository 'artifacts\task007-activity-20260918\service')).Path
+$programFilesRoot = [System.IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd('\')
+$expected = [System.IO.Path]::GetFullPath((Join-Path $programFilesRoot 'Vantrel Security\Service'))
+$target = (Resolve-Path -LiteralPath $expected).Path
+if (-not $target.StartsWith($programFilesRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Installation path is outside Program Files.' }
+if (-not [string]::Equals($target, $expected, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected installation path.' }
+foreach ($directory in @($source, $target, (Split-Path -Parent $target))) {
+    if ((Get-Item -LiteralPath $directory -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "Linked directory: $directory" }
+}
+if (Get-ChildItem -LiteralPath $source -Force -Recurse | Where-Object { $_.Attributes -band [System.IO.FileAttributes]::ReparsePoint }) { throw 'Published files contain links.' }
+$service = Get-CimInstance Win32_Service -Filter "Name='VantrelSecurityService'"
+if ($null -eq $service -or $service.StartName -ne 'NT AUTHORITY\LocalService') { throw 'Unexpected service registration or account.' }
+if ($service.State -ne 'Running' -or $service.ProcessId -eq 0) { throw 'Service is not Running.' }
+if ($service.PathName.Trim('"') -ne (Join-Path $target 'Vantrel.Security.Service.exe')) { throw 'Unexpected service binary path.' }
+$oldHashes = @{
+    'Vantrel.Security.Service.exe' = 'C23423AE0B0AF023CDFD0F7955EF3066DA661175E74A28C0B03F86C2A0A4776A'
+    'Vantrel.Security.Service.dll' = 'C4F2CDF441F173E3191F8FA3CA362ABB3857988F7752D421CBE32B5CB6518DE0'
+    'Vantrel.Security.Infrastructure.dll' = '3FD12C81054B882A03AD224468251DEE6EA65517AD372BD8DC3FF78E210E3DFF'
+    'Vantrel.Security.Core.dll' = 'AF00FB38A5289020D976513EA19C79B7E56C1B351F4C53D1ED7C26F762128AF2'
+}
+$newHashes = @{
+    'Vantrel.Security.Service.dll' = 'CC09FFD693EB96CE027998AF5B5066DE0ECD91523E3A625E0BD370518F2B0F6E'
+    'Vantrel.Security.Infrastructure.dll' = '8B429D8558CA9DF40BCDBA90408A5FCCE1699E46CF8A167281D3367B0FAC07A6'
+    'Vantrel.Security.Core.dll' = 'A0045C0F98D91268884D01D29087495C5BE710A3F87908544B1A9FA0EC2CB853'
+}
+$unchangedHashes = @{
+    'Vantrel.Security.Service.deps.json' = '93FF404CEA5B4070091DEFFE0A944C3FAD2C6D5FDB1849F92E2873215C9064FB'
+    'Vantrel.Security.Service.runtimeconfig.json' = '3E965CD7CFD553C2FF4E842D8D8019AAAE2DA0A21D92FF85A87573DD8D1B95C6'
+    'System.Diagnostics.EventLog.Messages.dll' = '8F3DEF30D41D85E2BD87B2D2E7542D49D625F0B4D96A6DC9B03E0F49BD59B8EF'
+}
+if ((Get-FileHash -LiteralPath (Join-Path $source 'Vantrel.Security.Service.exe') -Algorithm SHA256).Hash -ne '0AA3AF545CF7F18F0734BF6A7A2D74DBD1800A0C00053B345B2F63AF052F9B18') { throw 'Published service executable hash mismatch.' }
+foreach ($file in $oldHashes.Keys) {
+    if ((Get-FileHash -LiteralPath (Join-Path $target $file) -Algorithm SHA256).Hash -ne $oldHashes[$file]) { throw "Installed Task 006 baseline mismatch: $file" }
+}
+foreach ($file in $unchangedHashes.Keys) {
+    if ((Get-FileHash -LiteralPath (Join-Path $source $file) -Algorithm SHA256).Hash -ne $unchangedHashes[$file]) { throw "Published metadata mismatch: $file" }
+    if ((Get-FileHash -LiteralPath (Join-Path $target $file) -Algorithm SHA256).Hash -ne $unchangedHashes[$file]) { throw "Installed metadata mismatch: $file" }
+}
+foreach ($file in $newHashes.Keys) {
+    if ((Get-FileHash -LiteralPath (Join-Path $source $file) -Algorithm SHA256).Hash -ne $newHashes[$file]) { throw "Published hash mismatch: $file" }
+    if ((Get-Item -LiteralPath (Join-Path $source $file) -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "Linked published file: $file" }
+    if ((Get-Item -LiteralPath (Join-Path $target $file) -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "Linked installed file: $file" }
+}
+$beforePid = $service.ProcessId
+$restartStart = Get-Date
+Stop-Service -Name $name
+(Get-Service -Name $name).WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
+foreach ($file in $newHashes.Keys) {
+    Copy-Item -LiteralPath (Join-Path $source $file) -Destination (Join-Path $target $file) -Force
+    if ((Get-FileHash -LiteralPath (Join-Path $target $file) -Algorithm SHA256).Hash -ne $newHashes[$file]) { throw "Installed hash mismatch: $file" }
+}
+if ((Get-FileHash -LiteralPath (Join-Path $target 'Vantrel.Security.Service.exe') -Algorithm SHA256).Hash -ne $oldHashes['Vantrel.Security.Service.exe']) { throw 'Installed service executable changed unexpectedly.' }
+Start-Service -Name $name
+(Get-Service -Name $name).WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
+$afterPid = (Get-CimInstance Win32_Service -Filter "Name='VantrelSecurityService'").ProcessId
+if ($afterPid -eq 0 -or $afterPid -eq $beforePid) { throw 'Service did not start with a new process.' }
+$events = @()
+for ($attempt = 0; $attempt -lt 10; $attempt++) {
+    $events = @(Get-WinEvent -FilterHashtable @{ LogName='Application'; ProviderName=$name; StartTime=$restartStart } -ErrorAction SilentlyContinue)
+    if (($events | Where-Object { $_.Message -like '*Local status pipe started*' }) -and
+        ($events | Where-Object { $_.Message -like '*System health sampling started*' })) { break }
+    Start-Sleep -Seconds 1
+}
+if (-not ($events | Where-Object { $_.Message -like '*Local status pipe started*' })) { throw 'No fresh status pipe startup event.' }
+if (-not ($events | Where-Object { $_.Message -like '*System health sampling started*' })) { throw 'No fresh health sampling startup event.' }
+Get-Service -Name $name
+"Service PID before=$beforePid after=$afterPid"
+```
+
+From a separate **non-elevated** PowerShell window, verify and launch the matching desktop:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$desktop = (Resolve-Path -LiteralPath 'C:\Users\tmaur\VANTREL SECURITY\artifacts\task007-activity-20260918\desktop').Path
+$desktopHashes = @{
+    'Vantrel.Security.Desktop.exe' = 'CD163EFBE8F79A9C6B98D6A04F9AC81A8916501696A866805CF08B216B8ADAD9'
+    'Vantrel.Security.Desktop.dll' = '817F94CE21D46BBB7A087CF56058FBEC529D1F488C6B5B0E7F17B73155B4DFE2'
+    'Vantrel.Security.Infrastructure.dll' = '8B429D8558CA9DF40BCDBA90408A5FCCE1699E46CF8A167281D3367B0FAC07A6'
+    'Vantrel.Security.Core.dll' = 'A0045C0F98D91268884D01D29087495C5BE710A3F87908544B1A9FA0EC2CB853'
+}
+foreach ($file in $desktopHashes.Keys) {
+    if ((Get-FileHash -LiteralPath (Join-Path $desktop $file) -Algorithm SHA256).Hash -ne $desktopHashes[$file]) { throw "Desktop hash mismatch: $file" }
+}
+& (Join-Path $desktop 'Vantrel.Security.Desktop.exe')
+```
+
+Confirm Dashboard remains **Connected** and Vantrel Protection Status remains **Unavailable**. On Activity, confirm two **Initial observation** entries, one for Windows-reported antivirus health and one for Windows-reported firewall health; either may be Unavailable. Record **Service start** and **Sampled through** values. “Observed at” is when the service sampled, not when Windows changed state. Leave this desktop process open. In the Administrator window, stop the service and wait for Activity to show **Disconnected** with no entries displayed:
+
+```powershell
+Stop-Service -Name VantrelSecurityService
+(Get-Service -Name VantrelSecurityService).WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
+Get-Service -Name VantrelSecurityService
+```
+
+Restart it. Confirm the **same desktop process** recovers and shows two fresh initial observations, a newer Service start, and a newer Sampled through time. The history should have reset; it must not show entries from the previous service process.
+
+```powershell
+Start-Service -Name VantrelSecurityService
+(Get-Service -Name VantrelSecurityService).WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
+Get-Service -Name VantrelSecurityService
+Get-WinEvent -FilterHashtable @{ LogName='Application'; ProviderName='VantrelSecurityService' } -MaxEvents 30 | ForEach-Object { "[$($_.TimeCreated)] $($_.Message)" }
+```
+
+Do not change antivirus, firewall, or Windows Security Center configuration to manufacture transitions. Automated tests inject those cases. Task 007 installed LocalService validation passed on 2026-09-18: initial service start was 5:10:47 AM, sampled through was 5:11:47 AM, and antivirus and firewall initial observations were Good. After stop and restart in the same desktop process, the reset history showed service start at 5:14:47 AM, sampled through at 5:15:47 AM, and two fresh initial Good observations observed at 5:14:47 AM. Previous-session observations did not reappear.
 
 ## Optional removal of the development service
 

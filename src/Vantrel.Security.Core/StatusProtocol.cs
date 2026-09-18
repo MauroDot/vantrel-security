@@ -11,7 +11,8 @@ public enum StatusResponseFailure
     UnsupportedVersion,
     UnexpectedType,
     InvalidStatus,
-    InvalidHealth
+    InvalidHealth,
+    InvalidActivity
 }
 
 public static class StatusProtocol
@@ -24,13 +25,17 @@ public static class StatusProtocol
     private sealed record Request(int ProtocolVersion, string Type);
     private sealed record Response(int ProtocolVersion, string Type, SecurityServiceStatus Status);
     private sealed record HealthResponse(int ProtocolVersion, string Type, SystemHealthSnapshot Health);
+    private sealed record ActivityResponse(int ProtocolVersion, string Type, ActivitySnapshot Activity);
 
-    public enum RequestKind { Invalid, Status, SystemHealth }
+    public enum RequestKind { Invalid, Status, SystemHealth, Activity }
 
     public static byte[] CreateRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_status"));
 
     public static byte[] CreateSystemHealthRequest() =>
         JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_system_health"));
+
+    public static byte[] CreateActivityRequest() =>
+        JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_activity"));
 
     public static bool IsValidRequest(ReadOnlySpan<byte> utf8) => ReadRequestKind(utf8) == RequestKind.Status;
 
@@ -45,6 +50,7 @@ public static class StatusProtocol
             {
                 "get_status" => RequestKind.Status,
                 "get_system_health" when HasOnlyFixedRequestFields(utf8) => RequestKind.SystemHealth,
+                "get_activity" when HasOnlyFixedRequestFields(utf8) => RequestKind.Activity,
                 _ => RequestKind.Invalid
             };
         }
@@ -68,6 +74,73 @@ public static class StatusProtocol
 
     public static byte[] CreateSystemHealthResponse(SystemHealthSnapshot health) =>
         JsonSerializer.SerializeToUtf8Bytes(new HealthResponse(Version, "system_health", health));
+
+    public static byte[] CreateActivityResponse(ActivitySnapshot activity) =>
+        JsonSerializer.SerializeToUtf8Bytes(new ActivityResponse(Version, "activity", activity));
+
+    public static bool TryReadActivityResponse(ReadOnlySpan<byte> utf8, out ActivitySnapshot? activity,
+        out StatusResponseFailure failure)
+    {
+        activity = null;
+        failure = utf8.Length switch
+        {
+            0 => StatusResponseFailure.Empty,
+            > MaximumMessageBytes => StatusResponseFailure.Oversized,
+            _ => StatusResponseFailure.None
+        };
+        if (failure != StatusResponseFailure.None) return false;
+        try
+        {
+            var response = JsonSerializer.Deserialize<ActivityResponse>(utf8);
+            if (response is null) { failure = StatusResponseFailure.MalformedJson; return false; }
+            if (response.ProtocolVersion != Version) { failure = StatusResponseFailure.UnsupportedVersion; return false; }
+            if (response.Type != "activity") { failure = StatusResponseFailure.UnexpectedType; return false; }
+            var value = response.Activity;
+            if (value is null || !HasExactActivityShape(utf8) ||
+                value.ServiceStartedAtUtc == default || value.SampledThroughUtc == default ||
+                value.ServiceStartedAtUtc.Offset != TimeSpan.Zero ||
+                value.SampledThroughUtc.Offset != TimeSpan.Zero ||
+                value.ServiceStartedAtUtc > value.SampledThroughUtc ||
+                value.SampledThroughUtc > DateTimeOffset.UtcNow.AddMinutes(1) ||
+                value.Entries.IsDefault || value.Entries.Length > 12 ||
+                value.Entries.Any(entry => entry is null || !Enum.IsDefined(entry.Category) ||
+                    !Enum.IsDefined(entry.Kind) ||
+                    !Enum.IsDefined(entry.CurrentState) ||
+                    (entry.PreviousState is { } previous &&
+                        (!Enum.IsDefined(previous) || previous == entry.CurrentState)) ||
+                    (entry.Kind == ActivityObservationKind.Initial) != (entry.PreviousState is null) ||
+                    entry.ObservedAtUtc == default ||
+                    entry.ObservedAtUtc.Offset != TimeSpan.Zero ||
+                    entry.ObservedAtUtc < value.ServiceStartedAtUtc ||
+                    entry.ObservedAtUtc > value.SampledThroughUtc))
+            {
+                failure = StatusResponseFailure.InvalidActivity;
+                return false;
+            }
+            activity = value;
+            return true;
+        }
+        catch (JsonException) { failure = StatusResponseFailure.MalformedJson; return false; }
+    }
+
+    private static bool HasExactActivityShape(ReadOnlySpan<byte> utf8)
+    {
+        using var document = JsonDocument.Parse(utf8.ToArray());
+        var root = document.RootElement;
+        if (!HasFields(root, "ProtocolVersion", "Type", "Activity")) return false;
+        var value = root.GetProperty("Activity");
+        if (!HasFields(value, "ServiceStartedAtUtc", "SampledThroughUtc", "Entries")) return false;
+        var entries = value.GetProperty("Entries");
+        return entries.ValueKind == JsonValueKind.Array && entries.EnumerateArray().All(entry =>
+            HasFields(entry, "Category", "Kind", "PreviousState", "CurrentState", "ObservedAtUtc"));
+    }
+
+    private static bool HasFields(JsonElement element, params string[] fields)
+    {
+        if (element.ValueKind != JsonValueKind.Object) return false;
+        var properties = element.EnumerateObject().Select(property => property.Name).ToArray();
+        return properties.Length == fields.Length && fields.All(field => properties.Count(name => name == field) == 1);
+    }
 
     public static bool TryReadSystemHealthResponse(ReadOnlySpan<byte> utf8, out SystemHealthSnapshot? health,
         out StatusResponseFailure failure)

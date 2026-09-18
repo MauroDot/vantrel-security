@@ -8,6 +8,7 @@ public sealed class StatusPipeWorker : BackgroundService
 {
     private readonly ServiceStatusStore _store;
     private readonly SystemHealthStore _healthStore;
+    private readonly ActivityStore _activityStore;
     private readonly ILogger<StatusPipeWorker> _logger;
     private readonly string _pipeName;
     private DateTimeOffset _lastExpectedErrorLogUtc = DateTimeOffset.MinValue;
@@ -15,17 +16,23 @@ public sealed class StatusPipeWorker : BackgroundService
     private DateTimeOffset _lastConnectedLogUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastResponseConsumedLogUtc = DateTimeOffset.MinValue;
 
-    public StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ILogger<StatusPipeWorker> logger)
-        : this(store, healthStore, logger, StatusProtocol.PipeName) { }
+    public StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
+        ILogger<StatusPipeWorker> logger)
+        : this(store, healthStore, activityStore, logger, StatusProtocol.PipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, ILogger<StatusPipeWorker> logger, string pipeName)
-        : this(store, new SystemHealthStore(), logger, pipeName) { }
+        : this(store, new SystemHealthStore(), new ActivityStore(store), logger, pipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore,
+        ILogger<StatusPipeWorker> logger, string pipeName)
+        : this(store, healthStore, new ActivityStore(store), logger, pipeName) { }
+
+    internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
         ILogger<StatusPipeWorker> logger, string pipeName)
     {
         _store = store;
         _healthStore = healthStore;
+        _activityStore = activityStore;
         _logger = logger;
         _pipeName = pipeName;
     }
@@ -59,12 +66,17 @@ public sealed class StatusPipeWorker : BackgroundService
                     var request = await PipeMessages.ReadAsync(pipe, timeout.Token);
                     var kind = request is null ? StatusProtocol.RequestKind.Invalid :
                         StatusProtocol.ReadRequestKind(request);
-                    if (kind != StatusProtocol.RequestKind.Invalid)
+                    if (kind != StatusProtocol.RequestKind.Invalid &&
+                        (kind != StatusProtocol.RequestKind.Activity || _activityStore.Snapshot() is not null))
                     {
                         stage = "WriteResponse";
-                        var response = kind == StatusProtocol.RequestKind.Status
-                            ? StatusProtocol.CreateResponse(_store.Snapshot())
-                            : StatusProtocol.CreateSystemHealthResponse(_healthStore.Snapshot());
+                        var response = kind switch
+                        {
+                            StatusProtocol.RequestKind.Status => StatusProtocol.CreateResponse(_store.Snapshot()),
+                            StatusProtocol.RequestKind.SystemHealth =>
+                                StatusProtocol.CreateSystemHealthResponse(_healthStore.Snapshot()),
+                            _ => StatusProtocol.CreateActivityResponse(_activityStore.Snapshot()!)
+                        };
                         await PipeMessages.WriteAsync(pipe, response, timeout.Token);
                         // DisconnectNamedPipe discards bytes the client has not read yet. The
                         // client closes its end only after reading the complete response frame.
@@ -74,7 +86,7 @@ public sealed class StatusPipeWorker : BackgroundService
                             LogExpectedError("UnexpectedTrailingData", stage);
                         else LogProgress("ResponseConsumed", ref _lastResponseConsumedLogUtc);
                     }
-                    else LogExpectedError("InvalidRequest", stage);
+                    else if (kind == StatusProtocol.RequestKind.Invalid) LogExpectedError("InvalidRequest", stage);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                 catch (OperationCanceledException error) { LogExpectedError("Timeout", stage, error); }
