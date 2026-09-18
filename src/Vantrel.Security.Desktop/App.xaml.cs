@@ -22,6 +22,8 @@ public partial class App : Application
                 (ISystemHealthClient)services.GetRequiredService<ISecurityServiceStatusClient>());
             builder.Services.AddSingleton<IActivityClient>(services =>
                 (IActivityClient)services.GetRequiredService<ISecurityServiceStatusClient>());
+            builder.Services.AddSingleton<IScanCapabilityClient>(services =>
+                (IScanCapabilityClient)services.GetRequiredService<ISecurityServiceStatusClient>());
             builder.Services.AddSingleton<MainWindow>();
             _host = builder.Build();
             await _host.StartAsync();

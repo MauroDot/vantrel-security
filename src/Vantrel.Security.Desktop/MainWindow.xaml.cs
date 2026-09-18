@@ -12,18 +12,21 @@ public partial class MainWindow : Window
     private readonly ISecurityServiceStatusClient _client;
     private readonly ISystemHealthClient _healthClient;
     private readonly IActivityClient _activityClient;
+    private readonly IScanCapabilityClient _scanCapabilityClient;
     private readonly ILogger<MainWindow> _logger;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private CancellationTokenSource? _refreshCancellation;
     private bool _activityWasDisconnected;
+    private bool _scanWasDisconnected;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
-        IActivityClient activityClient,
+        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient,
         ILogger<MainWindow> logger)
     {
         _client = client;
         _healthClient = healthClient;
         _activityClient = activityClient;
+        _scanCapabilityClient = scanCapabilityClient;
         _logger = logger;
         InitializeComponent();
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
@@ -74,6 +77,14 @@ public partial class MainWindow : Window
                 if (cancellation.IsCancellationRequested) return;
                 RenderActivity(activity, status is not null);
             }
+            if (status is null) _scanWasDisconnected = true;
+            if (ScanPanel.Visibility == Visibility.Visible)
+            {
+                var capability = status is null ? null :
+                    await _scanCapabilityClient.GetScanCapabilityAsync(cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                RenderScanCapability(capability, status is not null);
+            }
             _logger.LogInformation("Service status query completed: {Connected}", status is not null);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
@@ -88,8 +99,34 @@ public partial class MainWindow : Window
             if (SystemHealthPanel.Visibility == Visibility.Visible) RenderSystemHealth(null, false);
             _activityWasDisconnected = true;
             if (ActivityPanel.Visibility == Visibility.Visible) RenderActivity(null, false);
+            _scanWasDisconnected = true;
+            if (ScanPanel.Visibility == Visibility.Visible) RenderScanCapability(null, false);
             _logger.LogError(error, "Unexpected service status error");
         }
+    }
+
+    private void RenderScanCapability(ScanCapabilitySnapshot? capability, bool connected)
+    {
+        var state = ScanCapabilityPresentation.State(capability, connected, DateTimeOffset.UtcNow,
+            _scanWasDisconnected);
+        ScanStateText.Text = state switch
+        {
+            ScanCapabilityDisplayState.Disconnected => "Disconnected - service unavailable",
+            ScanCapabilityDisplayState.Unavailable => "Unavailable - scan capability could not be read",
+            ScanCapabilityDisplayState.Stale => "Stale - last capability sample is over two minutes old",
+            ScanCapabilityDisplayState.Recovered => "Recovered - current scan capability",
+            _ => "Current scan capability"
+        };
+        if (state == ScanCapabilityDisplayState.Disconnected) _scanWasDisconnected = true;
+        else if (state is ScanCapabilityDisplayState.Current or ScanCapabilityDisplayState.Recovered)
+            _scanWasDisconnected = false;
+        var visible = connected ? capability : null;
+        ScanSampleText.Text = visible is null ? "Sample: unavailable" :
+            $"Sample: {visible.SampledAtUtc.ToLocalTime():G}";
+        ScanPolicyText.Text = visible is null ? "Policy revision: unavailable" :
+            $"Policy revision: {visible.PolicyRevision}";
+        ScanCapabilityText.Text = visible is null ? string.Empty :
+            "Scanning is not enabled. No file scan is running. Client-supplied targets and scheduled fixed targets are not accepted or configured.";
     }
 
     private void RenderActivity(ActivitySnapshot? activity, bool connected)
@@ -190,10 +227,11 @@ public partial class MainWindow : Window
         var section = item.Content?.ToString() ?? "Dashboard";
         SectionTitle.Text = section;
         DashboardPanel.Visibility = section == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
+        ScanPanel.Visibility = section == "Scan" ? Visibility.Visible : Visibility.Collapsed;
         SystemHealthPanel.Visibility = section == "System Health" ? Visibility.Visible : Visibility.Collapsed;
         ActivityPanel.Visibility = section == "Activity" ? Visibility.Visible : Visibility.Collapsed;
-        PlaceholderPanel.Visibility = section is "Dashboard" or "System Health" or "Activity" ? Visibility.Collapsed : Visibility.Visible;
+        PlaceholderPanel.Visibility = section is "Dashboard" or "Scan" or "System Health" or "Activity" ? Visibility.Collapsed : Visibility.Visible;
         PlaceholderText.Text = $"{section} will be available in a future release.";
-        if (section is "System Health" or "Activity") await RefreshStatusAsync();
+        if (section is "Scan" or "System Health" or "Activity") await RefreshStatusAsync();
     }
 }

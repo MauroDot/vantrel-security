@@ -9,6 +9,7 @@ public sealed class StatusPipeWorker : BackgroundService
     private readonly ServiceStatusStore _store;
     private readonly SystemHealthStore _healthStore;
     private readonly ActivityStore _activityStore;
+    private readonly ScanCapabilityStore _scanCapabilityStore;
     private readonly ILogger<StatusPipeWorker> _logger;
     private readonly string _pipeName;
     private DateTimeOffset _lastExpectedErrorLogUtc = DateTimeOffset.MinValue;
@@ -17,22 +18,28 @@ public sealed class StatusPipeWorker : BackgroundService
     private DateTimeOffset _lastResponseConsumedLogUtc = DateTimeOffset.MinValue;
 
     public StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
-        ILogger<StatusPipeWorker> logger)
-        : this(store, healthStore, activityStore, logger, StatusProtocol.PipeName) { }
+        ScanCapabilityStore scanCapabilityStore, ILogger<StatusPipeWorker> logger)
+        : this(store, healthStore, activityStore, scanCapabilityStore, logger, StatusProtocol.PipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, ILogger<StatusPipeWorker> logger, string pipeName)
-        : this(store, new SystemHealthStore(), new ActivityStore(store), logger, pipeName) { }
+        : this(store, new SystemHealthStore(), new ActivityStore(store), new ScanCapabilityStore(), logger, pipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore,
         ILogger<StatusPipeWorker> logger, string pipeName)
-        : this(store, healthStore, new ActivityStore(store), logger, pipeName) { }
+        : this(store, healthStore, new ActivityStore(store), new ScanCapabilityStore(), logger, pipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
+        ILogger<StatusPipeWorker> logger, string pipeName)
+        : this(store, healthStore, activityStore, new ScanCapabilityStore(), logger, pipeName) { }
+
+    internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
+        ScanCapabilityStore scanCapabilityStore,
         ILogger<StatusPipeWorker> logger, string pipeName)
     {
         _store = store;
         _healthStore = healthStore;
         _activityStore = activityStore;
+        _scanCapabilityStore = scanCapabilityStore;
         _logger = logger;
         _pipeName = pipeName;
     }
@@ -67,7 +74,9 @@ public sealed class StatusPipeWorker : BackgroundService
                     var kind = request is null ? StatusProtocol.RequestKind.Invalid :
                         StatusProtocol.ReadRequestKind(request);
                     if (kind != StatusProtocol.RequestKind.Invalid &&
-                        (kind != StatusProtocol.RequestKind.Activity || _activityStore.Snapshot() is not null))
+                        (kind != StatusProtocol.RequestKind.Activity || _activityStore.Snapshot() is not null) &&
+                        (kind != StatusProtocol.RequestKind.ScanCapability ||
+                            _scanCapabilityStore.Snapshot() is not null))
                     {
                         stage = "WriteResponse";
                         var response = kind switch
@@ -75,7 +84,9 @@ public sealed class StatusPipeWorker : BackgroundService
                             StatusProtocol.RequestKind.Status => StatusProtocol.CreateResponse(_store.Snapshot()),
                             StatusProtocol.RequestKind.SystemHealth =>
                                 StatusProtocol.CreateSystemHealthResponse(_healthStore.Snapshot()),
-                            _ => StatusProtocol.CreateActivityResponse(_activityStore.Snapshot()!)
+                            StatusProtocol.RequestKind.Activity =>
+                                StatusProtocol.CreateActivityResponse(_activityStore.Snapshot()!),
+                            _ => StatusProtocol.CreateScanCapabilityResponse(_scanCapabilityStore.Snapshot()!)
                         };
                         await PipeMessages.WriteAsync(pipe, response, timeout.Token);
                         // DisconnectNamedPipe discards bytes the client has not read yet. The

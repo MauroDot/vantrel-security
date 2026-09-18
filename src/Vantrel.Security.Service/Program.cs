@@ -23,10 +23,13 @@ builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = Tim
 builder.Services.AddSingleton<ServiceStatusStore>();
 builder.Services.AddSingleton<SystemHealthStore>();
 builder.Services.AddSingleton<ActivityStore>();
+builder.Services.AddSingleton<ScanCapabilityStore>();
+builder.Services.AddSingleton<ScanCapabilitySource>();
 builder.Services.AddSingleton<Vantrel.Security.Infrastructure.WindowsSecurityCenterHealthSource>();
 builder.Services.AddSingleton<WindowsSystemHealthSource>();
 builder.Services.AddHostedService<HeartbeatWorker>();
 builder.Services.AddHostedService<SystemHealthWorker>();
+builder.Services.AddHostedService<ScanCapabilityWorker>();
 builder.Services.AddHostedService<StatusPipeWorker>();
 
 var host = builder.Build();

@@ -9,6 +9,7 @@ using Vantrel.Security.Core;
 namespace Vantrel.Security.Infrastructure;
 
 public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISystemHealthClient, IActivityClient,
+    IScanCapabilityClient,
     IStatusConnectionDiagnostics
 {
     private readonly string _pipeName;
@@ -53,6 +54,9 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISyste
     public Task<ActivitySnapshot?> GetActivityAsync(CancellationToken cancellationToken) =>
         QueryAsync(StatusProtocol.CreateActivityRequest(), ReadActivity, cancellationToken);
 
+    public Task<ScanCapabilitySnapshot?> GetScanCapabilityAsync(CancellationToken cancellationToken) =>
+        QueryAsync(StatusProtocol.CreateScanCapabilityRequest(), ReadScanCapability, cancellationToken);
+
     private static (SecurityServiceStatus?, StatusResponseFailure) ReadStatus(byte[] frame)
     {
         StatusProtocol.TryReadResponse(frame, out var status, out var failure);
@@ -69,6 +73,12 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISyste
     {
         StatusProtocol.TryReadActivityResponse(frame, out var activity, out var failure);
         return (activity, failure);
+    }
+
+    private static (ScanCapabilitySnapshot?, StatusResponseFailure) ReadScanCapability(byte[] frame)
+    {
+        StatusProtocol.TryReadScanCapabilityResponse(frame, out var capability, out var failure);
+        return (capability, failure);
     }
 
     private async Task<T?> QueryAsync<T>(byte[] request,

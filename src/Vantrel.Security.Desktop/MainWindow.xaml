@@ -92,6 +92,19 @@
                         </Border>
                     </Grid>
                 </StackPanel>
+                <Border x:Name="ScanPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14"
+                        Padding="26" BorderBrush="#29415B" BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock Text="SCAN CAPABILITY" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="ScanStateText" Text="Loading - checking service" FontSize="20"
+                                   FontWeight="SemiBold" Margin="0,12,0,10" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="ScanSampleText" Text="Sample: unavailable" Margin="0,0,0,8"/>
+                        <TextBlock x:Name="ScanPolicyText" Text="Policy revision: unavailable" Margin="0,0,0,18"/>
+                        <TextBlock x:Name="ScanCapabilityText" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                        <TextBlock Text="Vantrel does not yet perform file scanning. It accepts no client-supplied scan target and has no scheduled targets. Detection, quarantine, remediation, and real-time protection are not available."
+                                   Foreground="#A8B9C9" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
                 <Border x:Name="SystemHealthPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14"
                         Padding="26" BorderBrush="#29415B" BorderThickness="1">
                     <StackPanel>

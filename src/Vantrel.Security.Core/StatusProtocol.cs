@@ -12,7 +12,8 @@ public enum StatusResponseFailure
     UnexpectedType,
     InvalidStatus,
     InvalidHealth,
-    InvalidActivity
+    InvalidActivity,
+    InvalidScanCapability
 }
 
 public static class StatusProtocol
@@ -26,8 +27,9 @@ public static class StatusProtocol
     private sealed record Response(int ProtocolVersion, string Type, SecurityServiceStatus Status);
     private sealed record HealthResponse(int ProtocolVersion, string Type, SystemHealthSnapshot Health);
     private sealed record ActivityResponse(int ProtocolVersion, string Type, ActivitySnapshot Activity);
+    private sealed record ScanCapabilityResponse(int ProtocolVersion, string Type, ScanCapabilitySnapshot Capability);
 
-    public enum RequestKind { Invalid, Status, SystemHealth, Activity }
+    public enum RequestKind { Invalid, Status, SystemHealth, Activity, ScanCapability }
 
     public static byte[] CreateRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_status"));
 
@@ -36,6 +38,9 @@ public static class StatusProtocol
 
     public static byte[] CreateActivityRequest() =>
         JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_activity"));
+
+    public static byte[] CreateScanCapabilityRequest() =>
+        JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_scan_capability"));
 
     public static bool IsValidRequest(ReadOnlySpan<byte> utf8) => ReadRequestKind(utf8) == RequestKind.Status;
 
@@ -51,6 +56,7 @@ public static class StatusProtocol
                 "get_status" => RequestKind.Status,
                 "get_system_health" when HasOnlyFixedRequestFields(utf8) => RequestKind.SystemHealth,
                 "get_activity" when HasOnlyFixedRequestFields(utf8) => RequestKind.Activity,
+                "get_scan_capability" when HasOnlyFixedRequestFields(utf8) => RequestKind.ScanCapability,
                 _ => RequestKind.Invalid
             };
         }
@@ -77,6 +83,62 @@ public static class StatusProtocol
 
     public static byte[] CreateActivityResponse(ActivitySnapshot activity) =>
         JsonSerializer.SerializeToUtf8Bytes(new ActivityResponse(Version, "activity", activity));
+
+    public static byte[] CreateScanCapabilityResponse(ScanCapabilitySnapshot capability) =>
+        JsonSerializer.SerializeToUtf8Bytes(new ScanCapabilityResponse(Version, "scan_capability", capability));
+
+    public static bool TryReadScanCapabilityResponse(ReadOnlySpan<byte> utf8,
+        out ScanCapabilitySnapshot? capability, out StatusResponseFailure failure)
+    {
+        capability = null;
+        failure = utf8.Length switch
+        {
+            0 => StatusResponseFailure.Empty,
+            > MaximumMessageBytes => StatusResponseFailure.Oversized,
+            _ => StatusResponseFailure.None
+        };
+        if (failure != StatusResponseFailure.None) return false;
+        try
+        {
+            var response = JsonSerializer.Deserialize<ScanCapabilityResponse>(utf8);
+            if (response is null) { failure = StatusResponseFailure.MalformedJson; return false; }
+            if (response.ProtocolVersion != Version) { failure = StatusResponseFailure.UnsupportedVersion; return false; }
+            if (response.Type != "scan_capability") { failure = StatusResponseFailure.UnexpectedType; return false; }
+            var value = response.Capability;
+            if (value is null || !HasExactScanCapabilityShape(utf8) || value.SampledAtUtc == default ||
+                value.SampledAtUtc.Offset != TimeSpan.Zero || value.SampledAtUtc > DateTimeOffset.UtcNow.AddMinutes(1) ||
+                value.PolicyRevision is null or { Length: 0 } or { Length: > 64 } ||
+                value.PolicyRevision.Any(char.IsControl) || value.PolicyRevision != ScanCapabilitySourcePolicyRevision ||
+                value.Capability != ScanCapabilityState.NotEnabled ||
+                value.FileScanning != ScanActivityState.NotRunning ||
+                value.ClientSuppliedTargets != ScanTargetAcceptance.None ||
+                value.ScheduledTargets != ScheduledScanTargets.NoneConfigured ||
+                value.Detection != ScanFeatureAvailability.NotAvailable ||
+                value.Quarantine != ScanFeatureAvailability.NotAvailable ||
+                value.Remediation != ScanFeatureAvailability.NotAvailable ||
+                value.RealTimeProtection != ScanFeatureAvailability.NotAvailable)
+            {
+                failure = StatusResponseFailure.InvalidScanCapability;
+                return false;
+            }
+            capability = value;
+            return true;
+        }
+        catch (JsonException) { failure = StatusResponseFailure.MalformedJson; return false; }
+    }
+
+    // Kept in Core so protocol validation is platform-neutral and does not depend on the service assembly.
+    public const string ScanCapabilitySourcePolicyRevision = "scan-capability-v1";
+
+    private static bool HasExactScanCapabilityShape(ReadOnlySpan<byte> utf8)
+    {
+        using var document = JsonDocument.Parse(utf8.ToArray());
+        var root = document.RootElement;
+        return HasFields(root, "ProtocolVersion", "Type", "Capability") &&
+            HasFields(root.GetProperty("Capability"), "SampledAtUtc", "PolicyRevision", "Capability",
+                "FileScanning", "ClientSuppliedTargets", "ScheduledTargets", "Detection", "Quarantine",
+                "Remediation", "RealTimeProtection");
+    }
 
     public static bool TryReadActivityResponse(ReadOnlySpan<byte> utf8, out ActivitySnapshot? activity,
         out StatusResponseFailure failure)
