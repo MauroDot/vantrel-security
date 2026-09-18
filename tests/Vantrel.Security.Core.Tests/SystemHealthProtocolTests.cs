@@ -49,6 +49,7 @@ public sealed class SystemHealthProtocolTests
             snapshot with { SystemVolumeFreeBytes = 1001 },
             snapshot with { SystemVolumeFreeBytes = null },
             snapshot with { AntivirusHealth = (WindowsAntivirusHealth)99 },
+            snapshot with { FirewallHealth = (WindowsFirewallHealth)99 },
             snapshot with { WindowsVersion = new string('x', 65) },
             snapshot with { WindowsVersion = "bad\nversion" }
         };
@@ -101,11 +102,55 @@ public sealed class SystemHealthProtocolTests
     }
 
     [TestMethod]
+    public void Firewall_health_is_optional_for_task005_responses_and_all_states_roundtrip()
+    {
+        Assert.AreEqual(1, StatusProtocol.Version);
+        var now = DateTimeOffset.UtcNow;
+        var oldResponse = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            ProtocolVersion = 1,
+            Type = "system_health",
+            Health = new
+            {
+                CollectedAtUtc = now,
+                WindowsVersion = "10.0.26100.0",
+                SystemUptimeSeconds = 100L,
+                SystemVolumeTotalBytes = 1000L,
+                SystemVolumeFreeBytes = 500L,
+                AntivirusHealth = WindowsAntivirusHealth.Good
+            }
+        });
+        Assert.IsTrue(StatusProtocol.TryReadSystemHealthResponse(oldResponse, out var old, out _));
+        Assert.IsNotNull(old);
+        Assert.AreEqual(WindowsAntivirusHealth.Good, old.AntivirusHealth);
+        Assert.IsNull(old.FirewallHealth);
+
+        foreach (var state in Enum.GetValues<WindowsFirewallHealth>())
+        {
+            var snapshot = old with { FirewallHealth = state };
+            var newResponse = StatusProtocol.CreateSystemHealthResponse(snapshot);
+            Assert.IsTrue(StatusProtocol.TryReadSystemHealthResponse(newResponse, out var decoded, out _));
+            Assert.AreEqual(snapshot, decoded);
+            var task005 = JsonSerializer.Deserialize<Task005Response>(newResponse);
+            Assert.IsNotNull(task005);
+            Assert.AreEqual(1, task005.ProtocolVersion);
+            Assert.AreEqual("system_health", task005.Type);
+            Assert.AreEqual(WindowsAntivirusHealth.Good, task005.Health.AntivirusHealth);
+        }
+    }
+
+    private sealed record Task005Health(DateTimeOffset CollectedAtUtc, string? WindowsVersion,
+        long? SystemUptimeSeconds, long? SystemVolumeTotalBytes, long? SystemVolumeFreeBytes,
+        WindowsAntivirusHealth? AntivirusHealth);
+
+    private sealed record Task005Response(int ProtocolVersion, string Type, Task005Health Health);
+
+    [TestMethod]
     public void Presentation_marks_disconnected_unavailable_stale_and_partial()
     {
         var now = DateTimeOffset.UtcNow;
         var current = new SystemHealthSnapshot(now, "10.0.26100.0", 60, 100, 50,
-            WindowsAntivirusHealth.Good);
+            WindowsAntivirusHealth.Good, WindowsFirewallHealth.Good);
         Assert.AreEqual(SystemHealthDisplayState.Disconnected,
             SystemHealthPresentation.State(current, false, now));
         Assert.AreEqual(SystemHealthDisplayState.Unavailable,
@@ -118,6 +163,8 @@ public sealed class SystemHealthProtocolTests
             SystemHealthPresentation.State(current with { WindowsVersion = null }, true, now));
         Assert.AreEqual(SystemHealthDisplayState.Partial,
             SystemHealthPresentation.State(current with { AntivirusHealth = null }, true, now));
+        Assert.AreEqual(SystemHealthDisplayState.Partial,
+            SystemHealthPresentation.State(current with { FirewallHealth = null }, true, now));
         Assert.AreEqual(SystemHealthDisplayState.Current,
             SystemHealthPresentation.State(current, true, now));
     }

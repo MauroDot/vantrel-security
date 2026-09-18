@@ -19,20 +19,24 @@ public sealed class WindowsSystemHealthSource
     private readonly Func<long> _uptime;
     private readonly Func<(long Total, long Free)> _volume;
     private readonly Func<WindowsAntivirusHealth?> _antivirus;
+    private readonly Func<WindowsFirewallHealth?> _firewall;
 
-    public WindowsSystemHealthSource(WindowsSecurityCenterAntivirusSource antivirus) : this(
+    public WindowsSystemHealthSource(WindowsSecurityCenterHealthSource securityCenter) : this(
         () => Environment.OSVersion.Version.ToString(),
         () => Environment.TickCount64 / 1000,
         ReadSystemVolume,
-        antivirus.Collect) { }
+        securityCenter.CollectAntivirus,
+        securityCenter.CollectFirewall) { }
 
     internal WindowsSystemHealthSource(Func<string> version, Func<long> uptime,
-        Func<(long Total, long Free)> volume, Func<WindowsAntivirusHealth?>? antivirus = null)
+        Func<(long Total, long Free)> volume, Func<WindowsAntivirusHealth?>? antivirus = null,
+        Func<WindowsFirewallHealth?>? firewall = null)
     {
         _version = version;
         _uptime = uptime;
         _volume = volume;
         _antivirus = antivirus ?? (() => null);
+        _firewall = firewall ?? (() => null);
     }
 
     public SystemHealthSnapshot Collect()
@@ -43,6 +47,7 @@ public sealed class WindowsSystemHealthSource
         long? total = null;
         long? free = null;
         WindowsAntivirusHealth? antivirus = null;
+        WindowsFirewallHealth? firewall = null;
         try
         {
             var value = _version();
@@ -72,7 +77,13 @@ public sealed class WindowsSystemHealthSource
             if (value is { } state && Enum.IsDefined(state)) antivirus = state;
         }
         catch (Exception error) when (IsCollectionFailure(error)) { }
-        return new SystemHealthSnapshot(collectedAt, version, uptime, total, free, antivirus);
+        try
+        {
+            var value = _firewall();
+            if (value is { } state && Enum.IsDefined(state)) firewall = state;
+        }
+        catch (Exception error) when (IsCollectionFailure(error)) { }
+        return new SystemHealthSnapshot(collectedAt, version, uptime, total, free, antivirus, firewall);
     }
 
     private static (long Total, long Free) ReadSystemVolume()

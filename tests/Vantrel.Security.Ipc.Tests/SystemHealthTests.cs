@@ -23,6 +23,7 @@ public sealed class SystemHealthTests
         Assert.IsNull(snapshot.SystemVolumeTotalBytes);
         Assert.IsNull(snapshot.SystemVolumeFreeBytes);
         Assert.IsNull(snapshot.AntivirusHealth);
+        Assert.IsNull(snapshot.FirewallHealth);
         Assert.IsTrue(snapshot.CollectedAtUtc <= DateTimeOffset.UtcNow);
     }
 
@@ -36,15 +37,18 @@ public sealed class SystemHealthTests
         Assert.IsNull(snapshot.SystemVolumeTotalBytes);
         Assert.IsNull(snapshot.SystemVolumeFreeBytes);
         Assert.IsNull(snapshot.AntivirusHealth);
+        Assert.IsNull(snapshot.FirewallHealth);
     }
 
     [TestMethod]
     public void Collector_includes_antivirus_sample_without_affecting_other_values()
     {
         var source = new WindowsSystemHealthSource(() => "10.0.26100.0", () => 100,
-            () => (1000, 500), () => WindowsAntivirusHealth.Good);
+            () => (1000, 500), () => WindowsAntivirusHealth.Good,
+            () => WindowsFirewallHealth.Good);
         var snapshot = source.Collect();
         Assert.AreEqual(WindowsAntivirusHealth.Good, snapshot.AntivirusHealth);
+        Assert.AreEqual(WindowsFirewallHealth.Good, snapshot.FirewallHealth);
         Assert.AreEqual(500L, snapshot.SystemVolumeFreeBytes);
 
         var failed = new WindowsSystemHealthSource(() => "10.0.26100.0", () => 100,
@@ -56,6 +60,19 @@ public sealed class SystemHealthTests
             () => (1000, 500), () => (WindowsAntivirusHealth)99);
         Assert.IsNull(unexpected.Collect().AntivirusHealth);
         Assert.AreEqual(500L, unexpected.Collect().SystemVolumeFreeBytes);
+
+        var firewallFailure = new WindowsSystemHealthSource(() => "10.0.26100.0", () => 100,
+            () => (1000, 500), () => WindowsAntivirusHealth.Good,
+            () => throw new InvalidOperationException("firewall unavailable"));
+        var partial = firewallFailure.Collect();
+        Assert.IsNull(partial.FirewallHealth);
+        Assert.AreEqual(WindowsAntivirusHealth.Good, partial.AntivirusHealth);
+        Assert.AreEqual(500L, partial.SystemVolumeFreeBytes);
+
+        var badFirewall = new WindowsSystemHealthSource(() => "10.0.26100.0", () => 100,
+            () => (1000, 500), () => WindowsAntivirusHealth.Good,
+            () => (WindowsFirewallHealth)99);
+        Assert.IsNull(badFirewall.Collect().FirewallHealth);
     }
 
     [TestMethod]
@@ -64,7 +81,7 @@ public sealed class SystemHealthTests
         var pipeName = $"Vantrel.Security.Test.{Guid.NewGuid():N}";
         var store = new SystemHealthStore();
         var health = new SystemHealthSnapshot(DateTimeOffset.UtcNow, "10.0.26100.0", 123, 1000, 500,
-            WindowsAntivirusHealth.Good);
+            WindowsAntivirusHealth.Good, WindowsFirewallHealth.Good);
         store.Update(health);
         using var worker = new StatusPipeWorker(new ServiceStatusStore(), store,
             NullLogger<StatusPipeWorker>.Instance, pipeName);

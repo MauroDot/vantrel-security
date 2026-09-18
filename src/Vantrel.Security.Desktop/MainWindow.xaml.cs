@@ -116,6 +116,14 @@ public partial class MainWindow : Window
             WindowsAntivirusHealth.Snoozed => "Snoozed",
             _ => "Unavailable"
         }}";
+        HealthFirewallText.Text = $"Windows-reported firewall health: {visible?.FirewallHealth switch
+        {
+            WindowsFirewallHealth.Good => "Good",
+            WindowsFirewallHealth.NotMonitored => "Not monitored",
+            WindowsFirewallHealth.Poor => "Poor",
+            WindowsFirewallHealth.Snoozed => "Snoozed",
+            _ => "Unavailable"
+        }}";
     }
 
     private async void NavigationChanged(object sender, SelectionChangedEventArgs e)
