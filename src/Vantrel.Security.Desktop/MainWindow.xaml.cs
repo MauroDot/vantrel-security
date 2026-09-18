@@ -13,20 +13,23 @@ public partial class MainWindow : Window
     private readonly ISystemHealthClient _healthClient;
     private readonly IActivityClient _activityClient;
     private readonly IScanCapabilityClient _scanCapabilityClient;
+    private readonly IComponentInspectionClient _componentInspectionClient;
     private readonly ILogger<MainWindow> _logger;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private CancellationTokenSource? _refreshCancellation;
     private bool _activityWasDisconnected;
     private bool _scanWasDisconnected;
+    private bool _inspectionWasDisconnected;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
-        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient,
+        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient,
         ILogger<MainWindow> logger)
     {
         _client = client;
         _healthClient = healthClient;
         _activityClient = activityClient;
         _scanCapabilityClient = scanCapabilityClient;
+        _componentInspectionClient = componentInspectionClient;
         _logger = logger;
         InitializeComponent();
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
@@ -78,12 +81,16 @@ public partial class MainWindow : Window
                 RenderActivity(activity, status is not null);
             }
             if (status is null) _scanWasDisconnected = true;
+            if (status is null) _inspectionWasDisconnected = true;
             if (ScanPanel.Visibility == Visibility.Visible)
             {
                 var capability = status is null ? null :
                     await _scanCapabilityClient.GetScanCapabilityAsync(cancellation.Token);
                 if (cancellation.IsCancellationRequested) return;
                 RenderScanCapability(capability, status is not null);
+                var inspection = status is null ? null : await _componentInspectionClient.GetComponentInspectionAsync(cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                RenderComponentInspection(inspection, status is not null);
             }
             _logger.LogInformation("Service status query completed: {Connected}", status is not null);
         }
@@ -101,8 +108,19 @@ public partial class MainWindow : Window
             if (ActivityPanel.Visibility == Visibility.Visible) RenderActivity(null, false);
             _scanWasDisconnected = true;
             if (ScanPanel.Visibility == Visibility.Visible) RenderScanCapability(null, false);
+            if (ScanPanel.Visibility == Visibility.Visible) RenderComponentInspection(null, false);
             _logger.LogError(error, "Unexpected service status error");
         }
+    }
+
+    private void RenderComponentInspection(ComponentInspectionSnapshot? inspection, bool connected)
+    {
+        var state = ComponentInspectionPresentation.State(inspection, connected, DateTimeOffset.UtcNow, _inspectionWasDisconnected);
+        InspectionStateText.Text = state switch { ComponentInspectionDisplayState.Disconnected => "Disconnected - service unavailable", ComponentInspectionDisplayState.Unavailable => "Unavailable - component inspection could not be read", ComponentInspectionDisplayState.Stale => "Stale - last observation is over 30 minutes old", ComponentInspectionDisplayState.Recovered => "Recovered - current component observation", _ => "Current component observation" };
+        if (state == ComponentInspectionDisplayState.Disconnected) _inspectionWasDisconnected = true; else if (state is ComponentInspectionDisplayState.Current or ComponentInspectionDisplayState.Recovered) _inspectionWasDisconnected = false;
+        var value = connected ? inspection : null;
+        InspectionSampleText.Text = value is null ? "Sample: unavailable" : $"Sample: {value.SampledAtUtc.ToLocalTime():G}";
+        InspectionValueText.Text = value?.Outcome == ComponentInspectionOutcome.Observed ? $"Observed SHA-256: {value.Hash} ({value.ObservedByteLength:N0} bytes)" : $"Observation: {value?.Reason.ToString() ?? "Unavailable"}";
     }
 
     private void RenderScanCapability(ScanCapabilitySnapshot? capability, bool connected)

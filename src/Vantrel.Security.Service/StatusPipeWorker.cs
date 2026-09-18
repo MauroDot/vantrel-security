@@ -10,6 +10,7 @@ public sealed class StatusPipeWorker : BackgroundService
     private readonly SystemHealthStore _healthStore;
     private readonly ActivityStore _activityStore;
     private readonly ScanCapabilityStore _scanCapabilityStore;
+    private readonly ComponentInspectionStore _componentInspectionStore;
     private readonly ILogger<StatusPipeWorker> _logger;
     private readonly string _pipeName;
     private DateTimeOffset _lastExpectedErrorLogUtc = DateTimeOffset.MinValue;
@@ -18,28 +19,33 @@ public sealed class StatusPipeWorker : BackgroundService
     private DateTimeOffset _lastResponseConsumedLogUtc = DateTimeOffset.MinValue;
 
     public StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
-        ScanCapabilityStore scanCapabilityStore, ILogger<StatusPipeWorker> logger)
-        : this(store, healthStore, activityStore, scanCapabilityStore, logger, StatusProtocol.PipeName) { }
+        ScanCapabilityStore scanCapabilityStore, ComponentInspectionStore componentInspectionStore, ILogger<StatusPipeWorker> logger)
+        : this(store, healthStore, activityStore, scanCapabilityStore, componentInspectionStore, logger, StatusProtocol.PipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, ILogger<StatusPipeWorker> logger, string pipeName)
-        : this(store, new SystemHealthStore(), new ActivityStore(store), new ScanCapabilityStore(), logger, pipeName) { }
+        : this(store, new SystemHealthStore(), new ActivityStore(store), new ScanCapabilityStore(), new ComponentInspectionStore(), logger, pipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore,
         ILogger<StatusPipeWorker> logger, string pipeName)
-        : this(store, healthStore, new ActivityStore(store), new ScanCapabilityStore(), logger, pipeName) { }
+        : this(store, healthStore, new ActivityStore(store), new ScanCapabilityStore(), new ComponentInspectionStore(), logger, pipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
         ILogger<StatusPipeWorker> logger, string pipeName)
-        : this(store, healthStore, activityStore, new ScanCapabilityStore(), logger, pipeName) { }
+        : this(store, healthStore, activityStore, new ScanCapabilityStore(), new ComponentInspectionStore(), logger, pipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
-        ScanCapabilityStore scanCapabilityStore,
+        ScanCapabilityStore scanCapabilityStore, ILogger<StatusPipeWorker> logger, string pipeName)
+        : this(store, healthStore, activityStore, scanCapabilityStore, new ComponentInspectionStore(), logger, pipeName) { }
+
+    internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
+        ScanCapabilityStore scanCapabilityStore, ComponentInspectionStore componentInspectionStore,
         ILogger<StatusPipeWorker> logger, string pipeName)
     {
         _store = store;
         _healthStore = healthStore;
         _activityStore = activityStore;
         _scanCapabilityStore = scanCapabilityStore;
+        _componentInspectionStore = componentInspectionStore;
         _logger = logger;
         _pipeName = pipeName;
     }
@@ -76,7 +82,8 @@ public sealed class StatusPipeWorker : BackgroundService
                     if (kind != StatusProtocol.RequestKind.Invalid &&
                         (kind != StatusProtocol.RequestKind.Activity || _activityStore.Snapshot() is not null) &&
                         (kind != StatusProtocol.RequestKind.ScanCapability ||
-                            _scanCapabilityStore.Snapshot() is not null))
+                            _scanCapabilityStore.Snapshot() is not null) &&
+                        (kind != StatusProtocol.RequestKind.ComponentInspection || _componentInspectionStore.Snapshot() is not null))
                     {
                         stage = "WriteResponse";
                         var response = kind switch
@@ -86,7 +93,8 @@ public sealed class StatusPipeWorker : BackgroundService
                                 StatusProtocol.CreateSystemHealthResponse(_healthStore.Snapshot()),
                             StatusProtocol.RequestKind.Activity =>
                                 StatusProtocol.CreateActivityResponse(_activityStore.Snapshot()!),
-                            _ => StatusProtocol.CreateScanCapabilityResponse(_scanCapabilityStore.Snapshot()!)
+                            StatusProtocol.RequestKind.ScanCapability => StatusProtocol.CreateScanCapabilityResponse(_scanCapabilityStore.Snapshot()!),
+                            _ => StatusProtocol.CreateComponentInspectionResponse(_componentInspectionStore.Snapshot()!)
                         };
                         await PipeMessages.WriteAsync(pipe, response, timeout.Token);
                         // DisconnectNamedPipe discards bytes the client has not read yet. The

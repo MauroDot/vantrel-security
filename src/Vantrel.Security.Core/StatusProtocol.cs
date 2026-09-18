@@ -13,7 +13,8 @@ public enum StatusResponseFailure
     InvalidStatus,
     InvalidHealth,
     InvalidActivity,
-    InvalidScanCapability
+    InvalidScanCapability,
+    InvalidComponentInspection
 }
 
 public static class StatusProtocol
@@ -28,8 +29,9 @@ public static class StatusProtocol
     private sealed record HealthResponse(int ProtocolVersion, string Type, SystemHealthSnapshot Health);
     private sealed record ActivityResponse(int ProtocolVersion, string Type, ActivitySnapshot Activity);
     private sealed record ScanCapabilityResponse(int ProtocolVersion, string Type, ScanCapabilitySnapshot Capability);
+    private sealed record ComponentInspectionResponse(int ProtocolVersion, string Type, ComponentInspectionSnapshot Inspection);
 
-    public enum RequestKind { Invalid, Status, SystemHealth, Activity, ScanCapability }
+    public enum RequestKind { Invalid, Status, SystemHealth, Activity, ScanCapability, ComponentInspection }
 
     public static byte[] CreateRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_status"));
 
@@ -41,6 +43,7 @@ public static class StatusProtocol
 
     public static byte[] CreateScanCapabilityRequest() =>
         JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_scan_capability"));
+    public static byte[] CreateComponentInspectionRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_component_inspection"));
 
     public static bool IsValidRequest(ReadOnlySpan<byte> utf8) => ReadRequestKind(utf8) == RequestKind.Status;
 
@@ -57,6 +60,7 @@ public static class StatusProtocol
                 "get_system_health" when HasOnlyFixedRequestFields(utf8) => RequestKind.SystemHealth,
                 "get_activity" when HasOnlyFixedRequestFields(utf8) => RequestKind.Activity,
                 "get_scan_capability" when HasOnlyFixedRequestFields(utf8) => RequestKind.ScanCapability,
+                "get_component_inspection" when HasOnlyFixedRequestFields(utf8) => RequestKind.ComponentInspection,
                 _ => RequestKind.Invalid
             };
         }
@@ -86,6 +90,35 @@ public static class StatusProtocol
 
     public static byte[] CreateScanCapabilityResponse(ScanCapabilitySnapshot capability) =>
         JsonSerializer.SerializeToUtf8Bytes(new ScanCapabilityResponse(Version, "scan_capability", capability));
+    public static byte[] CreateComponentInspectionResponse(ComponentInspectionSnapshot inspection) =>
+        JsonSerializer.SerializeToUtf8Bytes(new ComponentInspectionResponse(Version, "component_inspection", inspection));
+
+    public static bool TryReadComponentInspectionResponse(ReadOnlySpan<byte> utf8, out ComponentInspectionSnapshot? inspection, out StatusResponseFailure failure)
+    {
+        inspection = null; failure = utf8.Length switch { 0 => StatusResponseFailure.Empty, > MaximumMessageBytes => StatusResponseFailure.Oversized, _ => StatusResponseFailure.None };
+        if (failure != StatusResponseFailure.None) return false;
+        try
+        {
+            var response = JsonSerializer.Deserialize<ComponentInspectionResponse>(utf8);
+            var value = response?.Inspection;
+            if (response is null || value is null) { failure = StatusResponseFailure.MalformedJson; return false; }
+            if (response.ProtocolVersion != Version) { failure = StatusResponseFailure.UnsupportedVersion; return false; }
+            if (response.Type != "component_inspection") { failure = StatusResponseFailure.UnexpectedType; return false; }
+            var observed = value.Outcome == ComponentInspectionOutcome.Observed;
+            if (!HasExactComponentInspectionShape(utf8) || value.SampledAtUtc == default || value.SampledAtUtc.Offset != TimeSpan.Zero || value.SampledAtUtc > DateTimeOffset.UtcNow.AddMinutes(1) ||
+                value.PolicyRevision != ComponentInspectionPolicyRevision || value.Target != ComponentInspectionTarget.VantrelServiceAssembly || !Enum.IsDefined(value.Outcome) || !Enum.IsDefined(value.Reason) ||
+                (observed && (value.Reason != ComponentInspectionReason.None || value.HashAlgorithm != ComponentHashAlgorithm.Sha256 || value.Hash is null || value.Hash.Length != 64 || !value.Hash.All(Uri.IsHexDigit) || value.ObservedByteLength is null or < 0)) ||
+                (!observed && (value.Reason == ComponentInspectionReason.None || value.HashAlgorithm is not null || value.Hash is not null || value.ObservedByteLength is not null))) { failure = StatusResponseFailure.InvalidComponentInspection; return false; }
+            inspection = value; return true;
+        }
+        catch (JsonException) { failure = StatusResponseFailure.MalformedJson; return false; }
+    }
+    public const string ComponentInspectionPolicyRevision = "component-inspection-v1";
+    private static bool HasExactComponentInspectionShape(ReadOnlySpan<byte> utf8)
+    {
+        using var d = JsonDocument.Parse(utf8.ToArray()); var root = d.RootElement;
+        return HasFields(root, "ProtocolVersion", "Type", "Inspection") && HasFields(root.GetProperty("Inspection"), "SampledAtUtc", "PolicyRevision", "Target", "Outcome", "Reason", "HashAlgorithm", "Hash", "ObservedByteLength");
+    }
 
     public static bool TryReadScanCapabilityResponse(ReadOnlySpan<byte> utf8,
         out ScanCapabilitySnapshot? capability, out StatusResponseFailure failure)
