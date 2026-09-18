@@ -22,6 +22,7 @@ public sealed class SystemHealthTests
         Assert.AreEqual(123L, snapshot.SystemUptimeSeconds);
         Assert.IsNull(snapshot.SystemVolumeTotalBytes);
         Assert.IsNull(snapshot.SystemVolumeFreeBytes);
+        Assert.IsNull(snapshot.AntivirusHealth);
         Assert.IsTrue(snapshot.CollectedAtUtc <= DateTimeOffset.UtcNow);
     }
 
@@ -34,6 +35,27 @@ public sealed class SystemHealthTests
         Assert.IsNull(snapshot.SystemUptimeSeconds);
         Assert.IsNull(snapshot.SystemVolumeTotalBytes);
         Assert.IsNull(snapshot.SystemVolumeFreeBytes);
+        Assert.IsNull(snapshot.AntivirusHealth);
+    }
+
+    [TestMethod]
+    public void Collector_includes_antivirus_sample_without_affecting_other_values()
+    {
+        var source = new WindowsSystemHealthSource(() => "10.0.26100.0", () => 100,
+            () => (1000, 500), () => WindowsAntivirusHealth.Good);
+        var snapshot = source.Collect();
+        Assert.AreEqual(WindowsAntivirusHealth.Good, snapshot.AntivirusHealth);
+        Assert.AreEqual(500L, snapshot.SystemVolumeFreeBytes);
+
+        var failed = new WindowsSystemHealthSource(() => "10.0.26100.0", () => 100,
+            () => (1000, 500), () => throw new InvalidOperationException("not available"));
+        Assert.IsNull(failed.Collect().AntivirusHealth);
+        Assert.AreEqual("10.0.26100.0", failed.Collect().WindowsVersion);
+
+        var unexpected = new WindowsSystemHealthSource(() => "10.0.26100.0", () => 100,
+            () => (1000, 500), () => (WindowsAntivirusHealth)99);
+        Assert.IsNull(unexpected.Collect().AntivirusHealth);
+        Assert.AreEqual(500L, unexpected.Collect().SystemVolumeFreeBytes);
     }
 
     [TestMethod]
@@ -41,7 +63,8 @@ public sealed class SystemHealthTests
     {
         var pipeName = $"Vantrel.Security.Test.{Guid.NewGuid():N}";
         var store = new SystemHealthStore();
-        var health = new SystemHealthSnapshot(DateTimeOffset.UtcNow, "10.0.26100.0", 123, 1000, 500);
+        var health = new SystemHealthSnapshot(DateTimeOffset.UtcNow, "10.0.26100.0", 123, 1000, 500,
+            WindowsAntivirusHealth.Good);
         store.Update(health);
         using var worker = new StatusPipeWorker(new ServiceStatusStore(), store,
             NullLogger<StatusPipeWorker>.Instance, pipeName);
@@ -49,7 +72,9 @@ public sealed class SystemHealthTests
         try
         {
             var client = new NamedPipeStatusClient(pipeName, TimeSpan.FromSeconds(2), true);
-            Assert.IsNotNull(await client.GetStatusAsync(CancellationToken.None));
+            var status = await client.GetStatusAsync(CancellationToken.None);
+            Assert.IsNotNull(status);
+            Assert.AreEqual(ProtectionState.Unavailable, status.Protection);
             Assert.AreEqual(health, await client.GetSystemHealthAsync(CancellationToken.None));
             using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
             await using (var invalid = new NamedPipeClientStream(".", pipeName, StatusPipeServer.ClientRights,

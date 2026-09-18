@@ -108,6 +108,14 @@ public partial class MainWindow : Window
             visible.SystemVolumeFreeBytes is long free
             ? $"Windows system volume: {free / 1073741824d:F1} GiB free of {total / 1073741824d:F1} GiB"
             : "Windows system volume: Unavailable";
+        HealthAntivirusText.Text = $"Windows-reported antivirus health: {visible?.AntivirusHealth switch
+        {
+            WindowsAntivirusHealth.Good => "Good",
+            WindowsAntivirusHealth.NotMonitored => "Not monitored",
+            WindowsAntivirusHealth.Poor => "Poor",
+            WindowsAntivirusHealth.Snoozed => "Snoozed",
+            _ => "Unavailable"
+        }}";
     }
 
     private async void NavigationChanged(object sender, SelectionChangedEventArgs e)

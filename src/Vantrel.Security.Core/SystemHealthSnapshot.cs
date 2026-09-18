@@ -1,12 +1,16 @@
 namespace Vantrel.Security.Core;
 
+/// <summary>Windows Security Center's aggregate antivirus-category state, not Vantrel protection.</summary>
+public enum WindowsAntivirusHealth { Good = 0, NotMonitored = 1, Poor = 2, Snoozed = 3 }
+
 /// <summary>Coarse, read-only machine information. Null means that value was unavailable.</summary>
 public sealed record SystemHealthSnapshot(
     DateTimeOffset CollectedAtUtc,
     string? WindowsVersion,
     long? SystemUptimeSeconds,
     long? SystemVolumeTotalBytes,
-    long? SystemVolumeFreeBytes);
+    long? SystemVolumeFreeBytes,
+    WindowsAntivirusHealth? AntivirusHealth = null);
 
 public enum SystemHealthDisplayState { Disconnected, Unavailable, Stale, Partial, Current }
 
@@ -20,10 +24,12 @@ public static class SystemHealthPresentation
         if (snapshot is null) return SystemHealthDisplayState.Unavailable;
         if (now - snapshot.CollectedAtUtc > StaleAfter) return SystemHealthDisplayState.Stale;
         if (snapshot.WindowsVersion is null && snapshot.SystemUptimeSeconds is null &&
-            snapshot.SystemVolumeTotalBytes is null && snapshot.SystemVolumeFreeBytes is null)
+            snapshot.SystemVolumeTotalBytes is null && snapshot.SystemVolumeFreeBytes is null &&
+            snapshot.AntivirusHealth is null)
             return SystemHealthDisplayState.Unavailable;
         return snapshot.WindowsVersion is null || snapshot.SystemUptimeSeconds is null ||
-            snapshot.SystemVolumeTotalBytes is null || snapshot.SystemVolumeFreeBytes is null
+            snapshot.SystemVolumeTotalBytes is null || snapshot.SystemVolumeFreeBytes is null ||
+            snapshot.AntivirusHealth is null
             ? SystemHealthDisplayState.Partial : SystemHealthDisplayState.Current;
     }
 }

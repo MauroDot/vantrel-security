@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Vantrel.Security.Core;
 
 namespace Vantrel.Security.Core.Tests;
@@ -47,6 +48,7 @@ public sealed class SystemHealthProtocolTests
             snapshot with { SystemUptimeSeconds = -1 },
             snapshot with { SystemVolumeFreeBytes = 1001 },
             snapshot with { SystemVolumeFreeBytes = null },
+            snapshot with { AntivirusHealth = (WindowsAntivirusHealth)99 },
             snapshot with { WindowsVersion = new string('x', 65) },
             snapshot with { WindowsVersion = "bad\nversion" }
         };
@@ -68,10 +70,42 @@ public sealed class SystemHealthProtocolTests
     }
 
     [TestMethod]
+    public void Antivirus_health_is_optional_and_all_documented_states_roundtrip()
+    {
+        Assert.AreEqual(1, StatusProtocol.Version);
+        var now = DateTimeOffset.UtcNow;
+        var oldResponse = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            ProtocolVersion = 1,
+            Type = "system_health",
+            Health = new
+            {
+                CollectedAtUtc = now,
+                WindowsVersion = "10.0.26100.0",
+                SystemUptimeSeconds = 100L,
+                SystemVolumeTotalBytes = 1000L,
+                SystemVolumeFreeBytes = 500L
+            }
+        });
+        Assert.IsTrue(StatusProtocol.TryReadSystemHealthResponse(oldResponse, out var old, out _));
+        Assert.IsNotNull(old);
+        Assert.IsNull(old.AntivirusHealth);
+
+        foreach (var state in Enum.GetValues<WindowsAntivirusHealth>())
+        {
+            var snapshot = old with { AntivirusHealth = state };
+            Assert.IsTrue(StatusProtocol.TryReadSystemHealthResponse(
+                StatusProtocol.CreateSystemHealthResponse(snapshot), out var decoded, out _));
+            Assert.AreEqual(snapshot, decoded);
+        }
+    }
+
+    [TestMethod]
     public void Presentation_marks_disconnected_unavailable_stale_and_partial()
     {
         var now = DateTimeOffset.UtcNow;
-        var current = new SystemHealthSnapshot(now, "10.0.26100.0", 60, 100, 50);
+        var current = new SystemHealthSnapshot(now, "10.0.26100.0", 60, 100, 50,
+            WindowsAntivirusHealth.Good);
         Assert.AreEqual(SystemHealthDisplayState.Disconnected,
             SystemHealthPresentation.State(current, false, now));
         Assert.AreEqual(SystemHealthDisplayState.Unavailable,
@@ -82,6 +116,8 @@ public sealed class SystemHealthProtocolTests
             SystemHealthPresentation.State(current, true, now.AddMinutes(3)));
         Assert.AreEqual(SystemHealthDisplayState.Partial,
             SystemHealthPresentation.State(current with { WindowsVersion = null }, true, now));
+        Assert.AreEqual(SystemHealthDisplayState.Partial,
+            SystemHealthPresentation.State(current with { AntivirusHealth = null }, true, now));
         Assert.AreEqual(SystemHealthDisplayState.Current,
             SystemHealthPresentation.State(current, true, now));
     }

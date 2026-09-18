@@ -95,7 +95,8 @@ public static class StatusProtocol
                 value.SystemUptimeSeconds is < 0 ||
                 value.SystemVolumeTotalBytes is <= 0 || value.SystemVolumeFreeBytes is < 0 ||
                 (value.SystemVolumeTotalBytes is null) != (value.SystemVolumeFreeBytes is null) ||
-                value.SystemVolumeFreeBytes > value.SystemVolumeTotalBytes)
+                value.SystemVolumeFreeBytes > value.SystemVolumeTotalBytes ||
+                (value.AntivirusHealth is { } antivirus && !Enum.IsDefined(antivirus)))
             {
                 failure = StatusResponseFailure.InvalidHealth;
                 return false;

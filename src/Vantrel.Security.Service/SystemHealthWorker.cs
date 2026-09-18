@@ -1,5 +1,6 @@
 using System.Security;
 using Vantrel.Security.Core;
+using Vantrel.Security.Infrastructure;
 
 namespace Vantrel.Security.Service;
 
@@ -17,18 +18,21 @@ public sealed class WindowsSystemHealthSource
     private readonly Func<string> _version;
     private readonly Func<long> _uptime;
     private readonly Func<(long Total, long Free)> _volume;
+    private readonly Func<WindowsAntivirusHealth?> _antivirus;
 
-    public WindowsSystemHealthSource() : this(
+    public WindowsSystemHealthSource(WindowsSecurityCenterAntivirusSource antivirus) : this(
         () => Environment.OSVersion.Version.ToString(),
         () => Environment.TickCount64 / 1000,
-        ReadSystemVolume) { }
+        ReadSystemVolume,
+        antivirus.Collect) { }
 
     internal WindowsSystemHealthSource(Func<string> version, Func<long> uptime,
-        Func<(long Total, long Free)> volume)
+        Func<(long Total, long Free)> volume, Func<WindowsAntivirusHealth?>? antivirus = null)
     {
         _version = version;
         _uptime = uptime;
         _volume = volume;
+        _antivirus = antivirus ?? (() => null);
     }
 
     public SystemHealthSnapshot Collect()
@@ -38,6 +42,7 @@ public sealed class WindowsSystemHealthSource
         long? uptime = null;
         long? total = null;
         long? free = null;
+        WindowsAntivirusHealth? antivirus = null;
         try
         {
             var value = _version();
@@ -61,7 +66,13 @@ public sealed class WindowsSystemHealthSource
             }
         }
         catch (Exception error) when (IsCollectionFailure(error)) { }
-        return new SystemHealthSnapshot(collectedAt, version, uptime, total, free);
+        try
+        {
+            var value = _antivirus();
+            if (value is { } state && Enum.IsDefined(state)) antivirus = state;
+        }
+        catch (Exception error) when (IsCollectionFailure(error)) { }
+        return new SystemHealthSnapshot(collectedAt, version, uptime, total, free, antivirus);
     }
 
     private static (long Total, long Free) ReadSystemVolume()
