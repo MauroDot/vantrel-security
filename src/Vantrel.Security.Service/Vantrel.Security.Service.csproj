@@ -14,4 +14,19 @@
     <ProjectReference Include="..\Vantrel.Security.Core\Vantrel.Security.Core.csproj" />
     <ProjectReference Include="..\Vantrel.Security.Infrastructure\Vantrel.Security.Infrastructure.csproj" />
   </ItemGroup>
+
+  <Target Name="GenerateComponentIntegrityReference" AfterTargets="ResolveReferences" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <_ResolvedCore Include="@(ReferencePath)" Condition="'%(FileName)' == 'Vantrel.Security.Core'" />
+    </ItemGroup>
+    <Error Condition="'@(_ResolvedCore->Count())' != '1'" Text="Exactly one resolved Vantrel.Security.Core reference is required for component integrity." />
+    <GetFileHash Files="@(_ResolvedCore)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_ResolvedCoreHash" />
+    </GetFileHash>
+    <PropertyGroup><_ComponentIntegrityHash>@(_ResolvedCoreHash->'%(FileHash)')</_ComponentIntegrityHash></PropertyGroup>
+    <Error Condition="'$(_ComponentIntegrityHash)' == ''" Text="Component integrity reference generation failed." />
+    <WriteLinesToFile File="$(IntermediateOutputPath)ComponentIntegrityReference.g.cs" Overwrite="true"
+      Lines="namespace Vantrel.Security.Service {&#x0D;&#x0A;internal static class ComponentIntegrityReference { internal const string CoreSha256 = &quot;$(_ComponentIntegrityHash)&quot;%3B }&#x0D;&#x0A;}" />
+    <ItemGroup><Compile Include="$(IntermediateOutputPath)ComponentIntegrityReference.g.cs" /></ItemGroup>
+  </Target>
 </Project>

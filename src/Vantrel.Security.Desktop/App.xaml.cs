@@ -26,6 +26,8 @@ public partial class App : Application
                 (IScanCapabilityClient)services.GetRequiredService<ISecurityServiceStatusClient>());
             builder.Services.AddSingleton<IComponentInspectionClient>(services =>
                 (IComponentInspectionClient)services.GetRequiredService<ISecurityServiceStatusClient>());
+            builder.Services.AddSingleton<IComponentIntegrityClient>(services =>
+                (IComponentIntegrityClient)services.GetRequiredService<ISecurityServiceStatusClient>());
             builder.Services.AddSingleton<MainWindow>();
             _host = builder.Build();
             await _host.StartAsync();

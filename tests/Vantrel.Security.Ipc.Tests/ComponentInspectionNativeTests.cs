@@ -10,31 +10,68 @@ namespace Vantrel.Security.Ipc.Tests;
 public sealed class ComponentInspectionNativeTests
 {
     [TestMethod]
-    public void Production_di_registration_resolves_source_and_hosted_worker()
+    public async Task Fixed_core_target_matches_compiled_reference_and_wrong_content_mismatches()
+    {
+        var installedCore = Path.Combine(Path.GetDirectoryName(typeof(ComponentIntegritySource).Assembly.Location)!, "Vantrel.Security.Core.dll");
+        var match = await new ComponentIntegritySource(new NativeComponentInspectionHandleOperations(), () => true,
+            () => new ComponentInspectionTargetIdentity(installedCore, Path.GetDirectoryName(installedCore)!)).CollectAsync(CancellationToken.None);
+        Assert.AreEqual(ComponentIntegrityEvaluation.Match, match.Evaluation);
+        var root = Path.Combine(Path.GetTempPath(), $"vantrel-integrity-{Guid.NewGuid():N}"); Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "Vantrel.Security.Core.dll"); await File.WriteAllBytesAsync(path, [1, 2, 3]);
+            var mismatch = await new ComponentIntegritySource(new NativeComponentInspectionHandleOperations(), () => true,
+                () => new ComponentInspectionTargetIdentity(path, root)).CollectAsync(CancellationToken.None);
+            Assert.AreEqual(ComponentIntegrityEvaluation.Mismatch, mismatch.Evaluation);
+            Assert.IsNull(mismatch.ObservationReason);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
+    public async Task Core_collection_failure_is_observation_unavailable_and_cancellation_propagates()
+    {
+        var failure = await new ComponentIntegritySource(new CountingOperations { OpenError = new Win32Exception(5) }, () => true,
+            () => new ComponentInspectionTargetIdentity(Path.Combine(Path.GetTempPath(), "Vantrel.Security.Core.dll"), Path.GetTempPath())).CollectAsync(CancellationToken.None);
+        Assert.AreEqual(ComponentIntegrityEvaluation.ObservationUnavailable, failure.Evaluation);
+        Assert.AreEqual(ComponentInspectionReason.AccessDenied, failure.ObservationReason);
+        using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+        await Assert.ThrowsExceptionAsync<OperationCanceledException>(() => new ComponentIntegritySource(new CountingOperations(), () => true,
+            () => new ComponentInspectionTargetIdentity(Path.Combine(Path.GetTempPath(), "Vantrel.Security.Core.dll"), Path.GetTempPath())).CollectAsync(cancelled.Token));
+    }
+
+    [TestMethod]
+    public void Production_di_registration_resolves_sources_and_hosted_workers()
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<ComponentInspectionStore>();
         services.AddSingleton<ComponentInspectionSource>();
+        services.AddSingleton<ComponentIntegrityStore>();
+        services.AddSingleton<ComponentIntegritySource>();
         services.AddHostedService<ComponentInspectionWorker>();
+        services.AddHostedService<ComponentIntegrityWorker>();
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
         Assert.IsNotNull(provider.GetRequiredService<ComponentInspectionSource>());
         Assert.IsTrue(provider.GetServices<IHostedService>().Any(worker => worker is ComponentInspectionWorker));
+        Assert.IsNotNull(provider.GetRequiredService<ComponentIntegritySource>());
+        Assert.IsTrue(provider.GetServices<IHostedService>().Any(worker => worker is ComponentIntegrityWorker));
     }
 
     [TestMethod]
-    public async Task All_five_fixed_queries_share_the_single_pipe()
+    public async Task All_six_fixed_queries_share_the_single_pipe()
     {
         var pipe = $"Vantrel.Security.Test.{Guid.NewGuid():N}"; var status = new ServiceStatusStore();
         var health = new SystemHealthStore(); var activity = new ActivityStore(status); var scan = new ScanCapabilityStore(); var inspection = new ComponentInspectionStore();
         var sample = new SystemHealthSnapshot(DateTimeOffset.UtcNow, "10.0", 1, 2, 1); health.Update(sample); activity.Update(sample); scan.Update(new ScanCapabilitySource().Collect());
         inspection.Update(new ComponentInspectionSnapshot(DateTimeOffset.UtcNow, StatusProtocol.ComponentInspectionPolicyRevision, ComponentInspectionTarget.VantrelServiceAssembly, ComponentInspectionOutcome.Observed, ComponentInspectionReason.None, ComponentHashAlgorithm.Sha256, new string('A', 64), 1));
-        using var worker = new StatusPipeWorker(status, health, activity, scan, inspection, Microsoft.Extensions.Logging.Abstractions.NullLogger<StatusPipeWorker>.Instance, pipe);
+        var integrity = new ComponentIntegrityStore(); integrity.Update(new ComponentIntegritySnapshot(DateTimeOffset.UtcNow, StatusProtocol.ComponentIntegrityPolicyRevision, ComponentIntegrityTarget.VantrelCoreAssembly, ComponentHashAlgorithm.Sha256, ComponentIntegrityEvaluation.Match, null));
+        using var worker = new StatusPipeWorker(status, health, activity, scan, inspection, integrity, Microsoft.Extensions.Logging.Abstractions.NullLogger<StatusPipeWorker>.Instance, pipe);
         await worker.StartAsync(CancellationToken.None);
         try
         {
             var client = new Vantrel.Security.Infrastructure.NamedPipeStatusClient(pipe, TimeSpan.FromSeconds(2), true);
-            Assert.IsNotNull(await client.GetStatusAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetSystemHealthAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetActivityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetScanCapabilityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetComponentInspectionAsync(CancellationToken.None));
+            Assert.IsNotNull(await client.GetStatusAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetSystemHealthAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetActivityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetScanCapabilityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetComponentInspectionAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetComponentIntegrityAsync(CancellationToken.None));
         }
         finally { await worker.StopAsync(CancellationToken.None); }
     }

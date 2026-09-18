@@ -110,6 +110,13 @@
                         <TextBlock x:Name="InspectionValueText" Text="Observation: unavailable" TextWrapping="Wrap" Margin="0,0,0,10"/>
                         <TextBlock Text="This is an observed Vantrel component hash only. No trusted reference hash or detection policy is applied."
                                    Foreground="#A8B9C9" TextWrapping="Wrap"/>
+                        <Separator Margin="0,20,0,16"/>
+                        <TextBlock Text="VANTREL COMPONENT INTEGRITY" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="IntegrityStateText" Text="Loading - checking service" FontSize="18" FontWeight="SemiBold" Margin="0,10,0,8" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="IntegritySampleText" Text="Sample: unavailable" Margin="0,0,0,8"/>
+                        <TextBlock x:Name="IntegrityValueText" Text="Integrity: unavailable" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                        <TextBlock Text="This compares only the fixed Vantrel Core component with the build-pinned reference compiled into this Service build. It is not a malware or system-wide trust verdict."
+                                   Foreground="#A8B9C9" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
                 <Border x:Name="SystemHealthPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14"

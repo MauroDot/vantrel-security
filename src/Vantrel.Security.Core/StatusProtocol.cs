@@ -14,7 +14,8 @@ public enum StatusResponseFailure
     InvalidHealth,
     InvalidActivity,
     InvalidScanCapability,
-    InvalidComponentInspection
+    InvalidComponentInspection,
+    InvalidComponentIntegrity
 }
 
 public static class StatusProtocol
@@ -30,8 +31,9 @@ public static class StatusProtocol
     private sealed record ActivityResponse(int ProtocolVersion, string Type, ActivitySnapshot Activity);
     private sealed record ScanCapabilityResponse(int ProtocolVersion, string Type, ScanCapabilitySnapshot Capability);
     private sealed record ComponentInspectionResponse(int ProtocolVersion, string Type, ComponentInspectionSnapshot Inspection);
+    private sealed record ComponentIntegrityResponse(int ProtocolVersion, string Type, ComponentIntegritySnapshot Integrity);
 
-    public enum RequestKind { Invalid, Status, SystemHealth, Activity, ScanCapability, ComponentInspection }
+    public enum RequestKind { Invalid, Status, SystemHealth, Activity, ScanCapability, ComponentInspection, ComponentIntegrity }
 
     public static byte[] CreateRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_status"));
 
@@ -44,6 +46,7 @@ public static class StatusProtocol
     public static byte[] CreateScanCapabilityRequest() =>
         JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_scan_capability"));
     public static byte[] CreateComponentInspectionRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_component_inspection"));
+    public static byte[] CreateComponentIntegrityRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_component_integrity"));
 
     public static bool IsValidRequest(ReadOnlySpan<byte> utf8) => ReadRequestKind(utf8) == RequestKind.Status;
 
@@ -61,6 +64,7 @@ public static class StatusProtocol
                 "get_activity" when HasOnlyFixedRequestFields(utf8) => RequestKind.Activity,
                 "get_scan_capability" when HasOnlyFixedRequestFields(utf8) => RequestKind.ScanCapability,
                 "get_component_inspection" when HasOnlyFixedRequestFields(utf8) => RequestKind.ComponentInspection,
+                "get_component_integrity" when HasOnlyFixedRequestFields(utf8) => RequestKind.ComponentIntegrity,
                 _ => RequestKind.Invalid
             };
         }
@@ -92,6 +96,31 @@ public static class StatusProtocol
         JsonSerializer.SerializeToUtf8Bytes(new ScanCapabilityResponse(Version, "scan_capability", capability));
     public static byte[] CreateComponentInspectionResponse(ComponentInspectionSnapshot inspection) =>
         JsonSerializer.SerializeToUtf8Bytes(new ComponentInspectionResponse(Version, "component_inspection", inspection));
+    public static byte[] CreateComponentIntegrityResponse(ComponentIntegritySnapshot integrity) =>
+        JsonSerializer.SerializeToUtf8Bytes(new ComponentIntegrityResponse(Version, "component_integrity", integrity));
+
+    public const string ComponentIntegrityPolicyRevision = "component-integrity-v1";
+    public static bool TryReadComponentIntegrityResponse(ReadOnlySpan<byte> utf8, out ComponentIntegritySnapshot? integrity, out StatusResponseFailure failure)
+    {
+        integrity = null; failure = utf8.Length switch { 0 => StatusResponseFailure.Empty, > MaximumMessageBytes => StatusResponseFailure.Oversized, _ => StatusResponseFailure.None };
+        if (failure != StatusResponseFailure.None) return false;
+        try
+        {
+            var response = JsonSerializer.Deserialize<ComponentIntegrityResponse>(utf8); var value = response?.Integrity;
+            if (response is null || value is null) { failure = StatusResponseFailure.MalformedJson; return false; }
+            if (response.ProtocolVersion != Version) { failure = StatusResponseFailure.UnsupportedVersion; return false; }
+            if (response.Type != "component_integrity") { failure = StatusResponseFailure.UnexpectedType; return false; }
+            var unavailable = value.Evaluation is ComponentIntegrityEvaluation.ReferenceUnavailable or ComponentIntegrityEvaluation.ObservationUnavailable;
+            if (!HasExactComponentIntegrityShape(utf8) || value.SampledAtUtc == default || value.SampledAtUtc.Offset != TimeSpan.Zero || value.SampledAtUtc > DateTimeOffset.UtcNow.AddMinutes(1) || value.PolicyRevision != ComponentIntegrityPolicyRevision || value.Target != ComponentIntegrityTarget.VantrelCoreAssembly || value.Algorithm != ComponentHashAlgorithm.Sha256 || !Enum.IsDefined(value.Evaluation) || (unavailable != (value.ObservationReason is not null)) || (value.ObservationReason is { } reason && (!Enum.IsDefined(reason) || reason == ComponentInspectionReason.None))) { failure = StatusResponseFailure.InvalidComponentIntegrity; return false; }
+            integrity = value; return true;
+        }
+        catch (JsonException) { failure = StatusResponseFailure.MalformedJson; return false; }
+    }
+    private static bool HasExactComponentIntegrityShape(ReadOnlySpan<byte> utf8)
+    {
+        using var d = JsonDocument.Parse(utf8.ToArray()); var root = d.RootElement;
+        return HasFields(root, "ProtocolVersion", "Type", "Integrity") && HasFields(root.GetProperty("Integrity"), "SampledAtUtc", "PolicyRevision", "Target", "Algorithm", "Evaluation", "ObservationReason");
+    }
 
     public static bool TryReadComponentInspectionResponse(ReadOnlySpan<byte> utf8, out ComponentInspectionSnapshot? inspection, out StatusResponseFailure failure)
     {

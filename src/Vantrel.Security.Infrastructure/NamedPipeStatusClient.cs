@@ -9,7 +9,7 @@ using Vantrel.Security.Core;
 namespace Vantrel.Security.Infrastructure;
 
 public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISystemHealthClient, IActivityClient,
-    IScanCapabilityClient, IComponentInspectionClient,
+    IScanCapabilityClient, IComponentInspectionClient, IComponentIntegrityClient,
     IStatusConnectionDiagnostics
 {
     private readonly string _pipeName;
@@ -58,6 +58,8 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISyste
         QueryAsync(StatusProtocol.CreateScanCapabilityRequest(), ReadScanCapability, cancellationToken);
     public Task<ComponentInspectionSnapshot?> GetComponentInspectionAsync(CancellationToken cancellationToken) =>
         QueryAsync(StatusProtocol.CreateComponentInspectionRequest(), ReadComponentInspection, cancellationToken);
+    public Task<ComponentIntegritySnapshot?> GetComponentIntegrityAsync(CancellationToken cancellationToken) =>
+        QueryAsync(StatusProtocol.CreateComponentIntegrityRequest(), ReadComponentIntegrity, cancellationToken);
 
     private static (SecurityServiceStatus?, StatusResponseFailure) ReadStatus(byte[] frame)
     {
@@ -85,6 +87,10 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISyste
     private static (ComponentInspectionSnapshot?, StatusResponseFailure) ReadComponentInspection(byte[] frame)
     {
         StatusProtocol.TryReadComponentInspectionResponse(frame, out var value, out var failure); return (value, failure);
+    }
+    private static (ComponentIntegritySnapshot?, StatusResponseFailure) ReadComponentIntegrity(byte[] frame)
+    {
+        StatusProtocol.TryReadComponentIntegrityResponse(frame, out var value, out var failure); return (value, failure);
     }
 
     private async Task<T?> QueryAsync<T>(byte[] request,

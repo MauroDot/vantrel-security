@@ -14,15 +14,17 @@ public partial class MainWindow : Window
     private readonly IActivityClient _activityClient;
     private readonly IScanCapabilityClient _scanCapabilityClient;
     private readonly IComponentInspectionClient _componentInspectionClient;
+    private readonly IComponentIntegrityClient _componentIntegrityClient;
     private readonly ILogger<MainWindow> _logger;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private CancellationTokenSource? _refreshCancellation;
     private bool _activityWasDisconnected;
     private bool _scanWasDisconnected;
     private bool _inspectionWasDisconnected;
+    private bool _integrityWasDisconnected;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
-        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient,
+        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient,
         ILogger<MainWindow> logger)
     {
         _client = client;
@@ -30,6 +32,7 @@ public partial class MainWindow : Window
         _activityClient = activityClient;
         _scanCapabilityClient = scanCapabilityClient;
         _componentInspectionClient = componentInspectionClient;
+        _componentIntegrityClient = componentIntegrityClient;
         _logger = logger;
         InitializeComponent();
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
@@ -82,6 +85,7 @@ public partial class MainWindow : Window
             }
             if (status is null) _scanWasDisconnected = true;
             if (status is null) _inspectionWasDisconnected = true;
+            if (status is null) _integrityWasDisconnected = true;
             if (ScanPanel.Visibility == Visibility.Visible)
             {
                 var capability = status is null ? null :
@@ -91,6 +95,9 @@ public partial class MainWindow : Window
                 var inspection = status is null ? null : await _componentInspectionClient.GetComponentInspectionAsync(cancellation.Token);
                 if (cancellation.IsCancellationRequested) return;
                 RenderComponentInspection(inspection, status is not null);
+                var integrity = status is null ? null : await _componentIntegrityClient.GetComponentIntegrityAsync(cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                RenderComponentIntegrity(integrity, status is not null);
             }
             _logger.LogInformation("Service status query completed: {Connected}", status is not null);
         }
@@ -109,8 +116,18 @@ public partial class MainWindow : Window
             _scanWasDisconnected = true;
             if (ScanPanel.Visibility == Visibility.Visible) RenderScanCapability(null, false);
             if (ScanPanel.Visibility == Visibility.Visible) RenderComponentInspection(null, false);
+            if (ScanPanel.Visibility == Visibility.Visible) RenderComponentIntegrity(null, false);
             _logger.LogError(error, "Unexpected service status error");
         }
+    }
+
+    private void RenderComponentIntegrity(ComponentIntegritySnapshot? integrity, bool connected)
+    {
+        var state = ComponentIntegrityPresentation.State(integrity, connected, DateTimeOffset.UtcNow, _integrityWasDisconnected);
+        IntegrityStateText.Text = state switch { ComponentIntegrityDisplayState.Disconnected => "Disconnected - service unavailable", ComponentIntegrityDisplayState.Unavailable => "Unavailable - component integrity could not be read", ComponentIntegrityDisplayState.Stale => "Stale - last integrity sample is over 30 minutes old", ComponentIntegrityDisplayState.Recovered => "Recovered - current component integrity", _ => "Current component integrity" };
+        if (state == ComponentIntegrityDisplayState.Disconnected) _integrityWasDisconnected = true; else if (state is ComponentIntegrityDisplayState.Current or ComponentIntegrityDisplayState.Recovered) _integrityWasDisconnected = false;
+        IntegritySampleText.Text = integrity is null || !connected ? "Sample: unavailable" : $"Sample: {integrity.SampledAtUtc.ToLocalTime():G}";
+        IntegrityValueText.Text = integrity?.Evaluation switch { ComponentIntegrityEvaluation.Match => "Match - the observed Vantrel Core component matches the reference compiled into this Service build.", ComponentIntegrityEvaluation.Mismatch => "Mismatch - the observed Vantrel Core component does not match the reference compiled into this Service build.", _ => $"Unavailable: {integrity?.ObservationReason.ToString() ?? "Unavailable"}" };
     }
 
     private void RenderComponentInspection(ComponentInspectionSnapshot? inspection, bool connected)
