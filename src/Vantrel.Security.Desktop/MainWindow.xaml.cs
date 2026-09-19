@@ -15,6 +15,7 @@ public partial class MainWindow : Window
     private readonly IScanCapabilityClient _scanCapabilityClient;
     private readonly IComponentInspectionClient _componentInspectionClient;
     private readonly IComponentIntegrityClient _componentIntegrityClient;
+    private readonly ITrustedManifestIntegrityClient _trustedManifestIntegrityClient;
     private readonly ILogger<MainWindow> _logger;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private CancellationTokenSource? _refreshCancellation;
@@ -22,9 +23,10 @@ public partial class MainWindow : Window
     private bool _scanWasDisconnected;
     private bool _inspectionWasDisconnected;
     private bool _integrityWasDisconnected;
+    private bool _trustedManifestWasDisconnected;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
-        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient,
+        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient, ITrustedManifestIntegrityClient trustedManifestIntegrityClient,
         ILogger<MainWindow> logger)
     {
         _client = client;
@@ -33,6 +35,7 @@ public partial class MainWindow : Window
         _scanCapabilityClient = scanCapabilityClient;
         _componentInspectionClient = componentInspectionClient;
         _componentIntegrityClient = componentIntegrityClient;
+        _trustedManifestIntegrityClient = trustedManifestIntegrityClient;
         _logger = logger;
         InitializeComponent();
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
@@ -86,6 +89,7 @@ public partial class MainWindow : Window
             if (status is null) _scanWasDisconnected = true;
             if (status is null) _inspectionWasDisconnected = true;
             if (status is null) _integrityWasDisconnected = true;
+            if (status is null) _trustedManifestWasDisconnected = true;
             if (ScanPanel.Visibility == Visibility.Visible)
             {
                 var capability = status is null ? null :
@@ -98,6 +102,9 @@ public partial class MainWindow : Window
                 var integrity = status is null ? null : await _componentIntegrityClient.GetComponentIntegrityAsync(cancellation.Token);
                 if (cancellation.IsCancellationRequested) return;
                 RenderComponentIntegrity(integrity, status is not null);
+                var trustedManifest = status is null ? null : await _trustedManifestIntegrityClient.GetTrustedManifestIntegrityAsync(cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                RenderTrustedManifestIntegrity(trustedManifest, status is not null);
             }
             _logger.LogInformation("Service status query completed: {Connected}", status is not null);
         }
@@ -117,6 +124,7 @@ public partial class MainWindow : Window
             if (ScanPanel.Visibility == Visibility.Visible) RenderScanCapability(null, false);
             if (ScanPanel.Visibility == Visibility.Visible) RenderComponentInspection(null, false);
             if (ScanPanel.Visibility == Visibility.Visible) RenderComponentIntegrity(null, false);
+            if (ScanPanel.Visibility == Visibility.Visible) RenderTrustedManifestIntegrity(null, false);
             _logger.LogError(error, "Unexpected service status error");
         }
     }
@@ -128,6 +136,25 @@ public partial class MainWindow : Window
         if (state == ComponentIntegrityDisplayState.Disconnected) _integrityWasDisconnected = true; else if (state is ComponentIntegrityDisplayState.Current or ComponentIntegrityDisplayState.Recovered) _integrityWasDisconnected = false;
         IntegritySampleText.Text = integrity is null || !connected ? "Sample: unavailable" : $"Sample: {integrity.SampledAtUtc.ToLocalTime():G}";
         IntegrityValueText.Text = integrity?.Evaluation switch { ComponentIntegrityEvaluation.Match => "Match - the observed Vantrel Core component matches the reference compiled into this Service build.", ComponentIntegrityEvaluation.Mismatch => "Mismatch - the observed Vantrel Core component does not match the reference compiled into this Service build.", _ => $"Unavailable: {integrity?.ObservationReason.ToString() ?? "Unavailable"}" };
+    }
+
+    private void RenderTrustedManifestIntegrity(TrustedManifestIntegritySnapshot? integrity, bool connected)
+    {
+        var state = TrustedManifestIntegrityPresentation.State(integrity, connected, DateTimeOffset.UtcNow, _trustedManifestWasDisconnected);
+        TrustedManifestStateText.Text = state switch { TrustedManifestIntegrityDisplayState.Disconnected => "Disconnected - service unavailable", TrustedManifestIntegrityDisplayState.Unavailable => "Unavailable - signed installation integrity could not be read", TrustedManifestIntegrityDisplayState.Stale => "Stale - last signed integrity sample is over 30 minutes old", TrustedManifestIntegrityDisplayState.Recovered => "Recovered - current signed installation integrity", _ => "Current signed installation integrity" };
+        if (state == TrustedManifestIntegrityDisplayState.Disconnected) _trustedManifestWasDisconnected = true; else if (state is TrustedManifestIntegrityDisplayState.Current or TrustedManifestIntegrityDisplayState.Recovered) _trustedManifestWasDisconnected = false;
+        var value = connected ? integrity : null;
+        TrustedManifestSampleText.Text = value is null ? "Sample: unavailable" : $"Sample: {value.SampledAtUtc.ToLocalTime():G}";
+        TrustedManifestValueText.Text = value switch
+        {
+            { SignatureState: TrustedManifestSignatureState.Valid, Evaluation: TrustedManifestInstallationEvaluation.AllMatch } => "Manifest authentication: Valid. All seven fixed installed components match the signed manifest.",
+            { SignatureState: TrustedManifestSignatureState.Valid, Evaluation: TrustedManifestInstallationEvaluation.ComponentMismatch } => $"Manifest authentication: Valid. Component mismatch: {value.MismatchedComponent}.",
+            { SignatureState: TrustedManifestSignatureState.Valid, Evaluation: TrustedManifestInstallationEvaluation.ObservationUnavailable } => $"Manifest authentication: Valid. Component observation unavailable: {value.ObservationReason}.",
+            { SignatureState: TrustedManifestSignatureState.SignatureInvalid } => "Manifest authentication: Signature invalid. No component comparison was accepted.",
+            { SignatureState: TrustedManifestSignatureState.ManifestMalformed } => "Manifest authentication: Manifest malformed. No component comparison was accepted.",
+            { SignatureState: TrustedManifestSignatureState.UnsupportedSchema } => "Manifest authentication: Unsupported schema. No component comparison was accepted.",
+            _ => "Manifest authentication: unavailable."
+        };
     }
 
     private void RenderComponentInspection(ComponentInspectionSnapshot? inspection, bool connected)

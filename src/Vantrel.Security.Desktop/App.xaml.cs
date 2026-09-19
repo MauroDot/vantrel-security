@@ -28,6 +28,8 @@ public partial class App : Application
                 (IComponentInspectionClient)services.GetRequiredService<ISecurityServiceStatusClient>());
             builder.Services.AddSingleton<IComponentIntegrityClient>(services =>
                 (IComponentIntegrityClient)services.GetRequiredService<ISecurityServiceStatusClient>());
+            builder.Services.AddSingleton<ITrustedManifestIntegrityClient>(services =>
+                (ITrustedManifestIntegrityClient)services.GetRequiredService<ISecurityServiceStatusClient>());
             builder.Services.AddSingleton<MainWindow>();
             _host = builder.Build();
             await _host.StartAsync();

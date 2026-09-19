@@ -95,26 +95,33 @@ public sealed class ScanCapabilityTests
                 await server.WaitForConnectionAsync(timeout.Token);
                 var request = await PipeMessages.ReadAsync(server, timeout.Token);
                 Assert.IsNotNull(request);
+                var sentResponse = false;
                 switch (StatusProtocol.ReadRequestKind(request))
                 {
                     case StatusProtocol.RequestKind.Status:
                         await PipeMessages.WriteAsync(server,
                             StatusProtocol.CreateResponse(olderStatus.Snapshot()), timeout.Token);
+                        sentResponse = true;
                         break;
                     case StatusProtocol.RequestKind.SystemHealth:
                         await PipeMessages.WriteAsync(server, StatusProtocol.CreateSystemHealthResponse(health), timeout.Token);
+                        sentResponse = true;
                         break;
                     case StatusProtocol.RequestKind.Activity:
                         var activity = new ActivityStore(olderStatus);
                         activity.Update(health);
                         await PipeMessages.WriteAsync(server,
                             StatusProtocol.CreateActivityResponse(activity.Snapshot()!), timeout.Token);
+                        sentResponse = true;
                         break;
                     default:
                         Assert.AreEqual(StatusProtocol.RequestKind.ScanCapability,
                             StatusProtocol.ReadRequestKind(request));
                         break; // Old service closes the unsupported request without a response.
                 }
+                // Match the production lifecycle: DisconnectNamedPipe can discard a response the
+                // client has not consumed. The client closes after reading a complete frame.
+                if (sentResponse) await PipeMessages.ReadAsync(server, timeout.Token);
                 server.Disconnect();
             }
         }, timeout.Token);

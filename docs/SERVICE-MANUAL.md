@@ -2,7 +2,7 @@
 
 Vantrel Security is pre-release development software and must not be relied upon as the sole antivirus or endpoint protection solution.
 
-**Current status (2026-09-18): Tasks 003–008 passed installed-service validation.** Task 008 adds only a fixed, read-only Scan Capability snapshot. It does not scan files, accept targets, or expose a command surface. The guarded procedure below distinguishes the preserved installed baseline from the published Task 008 payload. Vantrel Protection Status remains Unavailable. Confirm any other target machine has a current .NET 10 runtime and Windows Desktop Runtime.
+**Current status (2026-09-19): Tasks 003–011 passed installed-service validation.** Task 011 adds a fixed signed-manifest comparison for seven installed service components. It accepts no scan target or command, and Vantrel Protection Status remains Unavailable. Confirm any other target machine has a current .NET 10 runtime and Windows Desktop Runtime.
 
 Use this procedure when unsigned `.ps1` files cannot run under the machine's PowerShell policy. It does not change execution policy. Review the source and publish output first. **Installation, start, stop, restart, and removal require an Administrator PowerShell window.** Querying status and launching the desktop do not.
 
@@ -739,6 +739,14 @@ Get-Service -Name $name -ErrorAction SilentlyContinue
 The final `Get-Service` command should produce no service. Confirm the desktop remains Disconnected after removal.
 
 The release service is framework-dependent and unsigned. This manual procedure is for validation only; do not treat it as a production installer. Task 003 validation recorded the `sc.exe qc` account (`NT AUTHORITY\LocalService`), Running/Stopped transitions, displayed service version, heartbeat and uptime, reconnect/disconnect behavior, and Event Log entries. Removal is optional and has not been performed as part of the passing installed-service check. See [DEPLOYMENT.md](DEPLOYMENT.md) for future signing requirements.
+
+## Task 011 signed-manifest validation
+
+Task 011 deployment must verify the final externally signed `Vantrel.Security.TrustedManifest` before copying it. The service accepts no desktop-selected manifest or file target. Its Scan page shows manifest authentication separately from the seven fixed component comparisons; it does not offer scan, browse, repair, trust-current, quarantine, or remediation controls. A valid signed manifest and matching files are not a malware, clean, safe, trusted-installation, or system-wide verdict. The release signer and offline verifier use explicit DER/RFC3279 ECDSA P-256 signatures. Private signing material must remain outside this repository, the payload, and Program Files.
+
+The trusted manifest signs the installed Service EXE, Service DLL, Infrastructure DLL, Core DLL, deps JSON, runtimeconfig JSON, and Event Log resource DLL. Therefore Task 011 must replace a changed Service EXE together with its signed DLL pair and manifest; retaining an earlier executable would correctly result in `ComponentMismatch`. The guard must validate the actual installed Task 010 hashes and the complete signed Task 011 payload before stopping the service.
+
+Task 011 installed LocalService validation passed on 2026-09-19. The guarded deployment verified the signed source manifest before copying and verified the installed Program Files payload cryptographically before startup. The service ran as `NT AUTHORITY\\LocalService`; the matching non-elevated desktop showed Connected, Protection Status Unavailable, System Health and Activity functioning, Scan Capability disabled, current Task 009 observation, Task 010 Component Integrity Match, valid manifest authentication, and all seven fixed components matching. Stopping the service moved the same desktop instance to disconnected and unavailable states. Restarting it recovered the same process with a fresh Scan sample at 4:18:23 AM; the Task 009 observation remained current, Task 010 remained Match, and the manifest remained valid with all seven components matching. No scan target, repair, quarantine, remediation, malware, clean, safe, or system-wide trust claim was shown.
 
 ## Task 009 Component Inspection validation
 

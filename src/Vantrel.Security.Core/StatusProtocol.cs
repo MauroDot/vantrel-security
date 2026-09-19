@@ -15,7 +15,8 @@ public enum StatusResponseFailure
     InvalidActivity,
     InvalidScanCapability,
     InvalidComponentInspection,
-    InvalidComponentIntegrity
+    InvalidComponentIntegrity,
+    InvalidTrustedManifestIntegrity
 }
 
 public static class StatusProtocol
@@ -32,8 +33,9 @@ public static class StatusProtocol
     private sealed record ScanCapabilityResponse(int ProtocolVersion, string Type, ScanCapabilitySnapshot Capability);
     private sealed record ComponentInspectionResponse(int ProtocolVersion, string Type, ComponentInspectionSnapshot Inspection);
     private sealed record ComponentIntegrityResponse(int ProtocolVersion, string Type, ComponentIntegritySnapshot Integrity);
+    private sealed record TrustedManifestIntegrityResponse(int ProtocolVersion, string Type, TrustedManifestIntegritySnapshot Integrity);
 
-    public enum RequestKind { Invalid, Status, SystemHealth, Activity, ScanCapability, ComponentInspection, ComponentIntegrity }
+    public enum RequestKind { Invalid, Status, SystemHealth, Activity, ScanCapability, ComponentInspection, ComponentIntegrity, TrustedManifestIntegrity }
 
     public static byte[] CreateRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_status"));
 
@@ -47,6 +49,7 @@ public static class StatusProtocol
         JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_scan_capability"));
     public static byte[] CreateComponentInspectionRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_component_inspection"));
     public static byte[] CreateComponentIntegrityRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_component_integrity"));
+    public static byte[] CreateTrustedManifestIntegrityRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_trusted_manifest_integrity"));
 
     public static bool IsValidRequest(ReadOnlySpan<byte> utf8) => ReadRequestKind(utf8) == RequestKind.Status;
 
@@ -65,6 +68,7 @@ public static class StatusProtocol
                 "get_scan_capability" when HasOnlyFixedRequestFields(utf8) => RequestKind.ScanCapability,
                 "get_component_inspection" when HasOnlyFixedRequestFields(utf8) => RequestKind.ComponentInspection,
                 "get_component_integrity" when HasOnlyFixedRequestFields(utf8) => RequestKind.ComponentIntegrity,
+                "get_trusted_manifest_integrity" when HasOnlyFixedRequestFields(utf8) => RequestKind.TrustedManifestIntegrity,
                 _ => RequestKind.Invalid
             };
         }
@@ -98,6 +102,33 @@ public static class StatusProtocol
         JsonSerializer.SerializeToUtf8Bytes(new ComponentInspectionResponse(Version, "component_inspection", inspection));
     public static byte[] CreateComponentIntegrityResponse(ComponentIntegritySnapshot integrity) =>
         JsonSerializer.SerializeToUtf8Bytes(new ComponentIntegrityResponse(Version, "component_integrity", integrity));
+    public static byte[] CreateTrustedManifestIntegrityResponse(TrustedManifestIntegritySnapshot integrity) =>
+        JsonSerializer.SerializeToUtf8Bytes(new TrustedManifestIntegrityResponse(Version, "trusted_manifest_integrity", integrity));
+
+    public const string TrustedManifestIntegrityPolicyRevision = "trusted-manifest-integrity-v1";
+    public static bool TryReadTrustedManifestIntegrityResponse(ReadOnlySpan<byte> utf8, out TrustedManifestIntegritySnapshot? integrity, out StatusResponseFailure failure)
+    {
+        integrity = null; failure = utf8.Length switch { 0 => StatusResponseFailure.Empty, > MaximumMessageBytes => StatusResponseFailure.Oversized, _ => StatusResponseFailure.None };
+        if (failure != StatusResponseFailure.None) return false;
+        try
+        {
+            var response = JsonSerializer.Deserialize<TrustedManifestIntegrityResponse>(utf8); var value = response?.Integrity;
+            if (response is null || value is null) { failure = StatusResponseFailure.MalformedJson; return false; }
+            if (response.ProtocolVersion != Version) { failure = StatusResponseFailure.UnsupportedVersion; return false; }
+            if (response.Type != "trusted_manifest_integrity") { failure = StatusResponseFailure.UnexpectedType; return false; }
+            var valid = value.SignatureState == TrustedManifestSignatureState.Valid;
+            var comparison = value.Evaluation is TrustedManifestInstallationEvaluation.AllMatch or TrustedManifestInstallationEvaluation.ComponentMismatch;
+            var permitsReason = value.Evaluation is TrustedManifestInstallationEvaluation.ObservationUnavailable or TrustedManifestInstallationEvaluation.ManifestUnavailable;
+            if (!HasExactTrustedManifestIntegrityShape(utf8) || value.SampledAtUtc == default || value.SampledAtUtc.Offset != TimeSpan.Zero || value.SampledAtUtc > DateTimeOffset.UtcNow.AddMinutes(1) || value.PolicyRevision != TrustedManifestIntegrityPolicyRevision || !Enum.IsDefined(value.SignatureState) || !Enum.IsDefined(value.Evaluation) || (comparison != valid) || (value.Evaluation == TrustedManifestInstallationEvaluation.ComponentMismatch) != (value.MismatchedComponent is not null) || (value.MismatchedComponent is { } component && !Enum.IsDefined(component)) || (!permitsReason && value.ObservationReason is not null) || (value.ObservationReason is { } reason && (!Enum.IsDefined(reason) || reason == ComponentInspectionReason.None))) { failure = StatusResponseFailure.InvalidTrustedManifestIntegrity; return false; }
+            integrity = value; return true;
+        }
+        catch (JsonException) { failure = StatusResponseFailure.MalformedJson; return false; }
+    }
+    private static bool HasExactTrustedManifestIntegrityShape(ReadOnlySpan<byte> utf8)
+    {
+        using var d = JsonDocument.Parse(utf8.ToArray()); var root = d.RootElement;
+        return HasFields(root, "ProtocolVersion", "Type", "Integrity") && HasFields(root.GetProperty("Integrity"), "SampledAtUtc", "PolicyRevision", "SignatureState", "Evaluation", "ObservationReason", "MismatchedComponent");
+    }
 
     public const string ComponentIntegrityPolicyRevision = "component-integrity-v1";
     public static bool TryReadComponentIntegrityResponse(ReadOnlySpan<byte> utf8, out ComponentIntegritySnapshot? integrity, out StatusResponseFailure failure)

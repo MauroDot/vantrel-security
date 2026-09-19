@@ -10,6 +10,39 @@ namespace Vantrel.Security.Ipc.Tests;
 public sealed class ComponentInspectionNativeTests
 {
     [TestMethod]
+    public void Production_trusted_manifest_verifier_is_one_valid_p256_public_key()
+    {
+        using var key = System.Security.Cryptography.ECDsa.Create();
+        key.ImportSubjectPublicKeyInfo(TrustedManifestPublicKey.SubjectPublicKeyInfo, out var read);
+        Assert.AreEqual(TrustedManifestPublicKey.SubjectPublicKeyInfo.Length, read);
+        Assert.AreEqual(256, key.KeySize);
+    }
+
+    [TestMethod]
+    public async Task Trusted_manifest_source_non_scm_gate_does_not_open_a_manifest_or_component()
+    {
+        var operations = new CountingOperations();
+        var source = new TrustedManifestIntegritySource(operations, () => false,
+            () => new ComponentInspectionTargetIdentity(Path.Combine(Path.GetTempPath(), "Vantrel.Security.TrustedManifest"), Path.GetTempPath()));
+        var value = await source.CollectAsync(CancellationToken.None);
+        Assert.AreEqual(TrustedManifestSignatureState.ManifestUnavailable, value.SignatureState);
+        Assert.AreEqual(TrustedManifestInstallationEvaluation.ManifestUnavailable, value.Evaluation);
+        Assert.AreEqual(ComponentInspectionReason.NotInstalledService, value.ObservationReason);
+        Assert.AreEqual(0, operations.OpenCount);
+    }
+
+    [TestMethod]
+    public async Task Trusted_manifest_wrong_fixed_identity_is_rejected_before_opening()
+    {
+        var operations = new CountingOperations();
+        var source = new TrustedManifestIntegritySource(operations, () => true,
+            () => new ComponentInspectionTargetIdentity(Path.Combine(Path.GetTempPath(), "other.manifest"), Path.GetTempPath()));
+        var value = await source.CollectAsync(CancellationToken.None);
+        Assert.AreEqual(ComponentInspectionReason.OutsideInstallRoot, value.ObservationReason);
+        Assert.AreEqual(0, operations.OpenCount);
+    }
+
+    [TestMethod]
     public async Task Fixed_core_target_matches_compiled_reference_and_wrong_content_mismatches()
     {
         var installedCore = Path.Combine(Path.GetDirectoryName(typeof(ComponentIntegritySource).Assembly.Location)!, "Vantrel.Security.Core.dll");
@@ -49,29 +82,35 @@ public sealed class ComponentInspectionNativeTests
         services.AddSingleton<ComponentInspectionSource>();
         services.AddSingleton<ComponentIntegrityStore>();
         services.AddSingleton<ComponentIntegritySource>();
+        services.AddSingleton<TrustedManifestIntegrityStore>();
+        services.AddSingleton<TrustedManifestIntegritySource>();
         services.AddHostedService<ComponentInspectionWorker>();
         services.AddHostedService<ComponentIntegrityWorker>();
+        services.AddHostedService<TrustedManifestIntegrityWorker>();
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
         Assert.IsNotNull(provider.GetRequiredService<ComponentInspectionSource>());
         Assert.IsTrue(provider.GetServices<IHostedService>().Any(worker => worker is ComponentInspectionWorker));
         Assert.IsNotNull(provider.GetRequiredService<ComponentIntegritySource>());
         Assert.IsTrue(provider.GetServices<IHostedService>().Any(worker => worker is ComponentIntegrityWorker));
+        Assert.IsNotNull(provider.GetRequiredService<TrustedManifestIntegritySource>());
+        Assert.IsTrue(provider.GetServices<IHostedService>().Any(worker => worker is TrustedManifestIntegrityWorker));
     }
 
     [TestMethod]
-    public async Task All_six_fixed_queries_share_the_single_pipe()
+    public async Task All_seven_fixed_queries_share_the_single_pipe()
     {
         var pipe = $"Vantrel.Security.Test.{Guid.NewGuid():N}"; var status = new ServiceStatusStore();
         var health = new SystemHealthStore(); var activity = new ActivityStore(status); var scan = new ScanCapabilityStore(); var inspection = new ComponentInspectionStore();
         var sample = new SystemHealthSnapshot(DateTimeOffset.UtcNow, "10.0", 1, 2, 1); health.Update(sample); activity.Update(sample); scan.Update(new ScanCapabilitySource().Collect());
         inspection.Update(new ComponentInspectionSnapshot(DateTimeOffset.UtcNow, StatusProtocol.ComponentInspectionPolicyRevision, ComponentInspectionTarget.VantrelServiceAssembly, ComponentInspectionOutcome.Observed, ComponentInspectionReason.None, ComponentHashAlgorithm.Sha256, new string('A', 64), 1));
         var integrity = new ComponentIntegrityStore(); integrity.Update(new ComponentIntegritySnapshot(DateTimeOffset.UtcNow, StatusProtocol.ComponentIntegrityPolicyRevision, ComponentIntegrityTarget.VantrelCoreAssembly, ComponentHashAlgorithm.Sha256, ComponentIntegrityEvaluation.Match, null));
-        using var worker = new StatusPipeWorker(status, health, activity, scan, inspection, integrity, Microsoft.Extensions.Logging.Abstractions.NullLogger<StatusPipeWorker>.Instance, pipe);
+        var manifest = new TrustedManifestIntegrityStore(); manifest.Update(new TrustedManifestIntegritySnapshot(DateTimeOffset.UtcNow, StatusProtocol.TrustedManifestIntegrityPolicyRevision, TrustedManifestSignatureState.Valid, TrustedManifestInstallationEvaluation.AllMatch, null, null));
+        using var worker = new StatusPipeWorker(status, health, activity, scan, inspection, integrity, manifest, Microsoft.Extensions.Logging.Abstractions.NullLogger<StatusPipeWorker>.Instance, pipe);
         await worker.StartAsync(CancellationToken.None);
         try
         {
             var client = new Vantrel.Security.Infrastructure.NamedPipeStatusClient(pipe, TimeSpan.FromSeconds(2), true);
-            Assert.IsNotNull(await client.GetStatusAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetSystemHealthAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetActivityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetScanCapabilityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetComponentInspectionAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetComponentIntegrityAsync(CancellationToken.None));
+            Assert.IsNotNull(await client.GetStatusAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetSystemHealthAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetActivityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetScanCapabilityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetComponentInspectionAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetComponentIntegrityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetTrustedManifestIntegrityAsync(CancellationToken.None));
         }
         finally { await worker.StopAsync(CancellationToken.None); }
     }
