@@ -19,6 +19,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vantrel.Security.Ipc.Tests", "tests\Vantrel.Security.Ipc.Tests\Vantrel.Security.Ipc.Tests.csproj", "{223E73C7-BBEB-4D34-8397-D6F6DD0DD86B}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vantrel.Security.Desktop.Tests", "tests\Vantrel.Security.Desktop.Tests\Vantrel.Security.Desktop.Tests.csproj", "{E6264CAD-030B-452E-BA91-A8BB110FA225}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -101,6 +103,18 @@ Global
 		{223E73C7-BBEB-4D34-8397-D6F6DD0DD86B}.Release|x64.Build.0 = Release|Any CPU
 		{223E73C7-BBEB-4D34-8397-D6F6DD0DD86B}.Release|x86.ActiveCfg = Release|Any CPU
 		{223E73C7-BBEB-4D34-8397-D6F6DD0DD86B}.Release|x86.Build.0 = Release|Any CPU
+		{E6264CAD-030B-452E-BA91-A8BB110FA225}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E6264CAD-030B-452E-BA91-A8BB110FA225}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E6264CAD-030B-452E-BA91-A8BB110FA225}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{E6264CAD-030B-452E-BA91-A8BB110FA225}.Debug|x64.Build.0 = Debug|Any CPU
+		{E6264CAD-030B-452E-BA91-A8BB110FA225}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{E6264CAD-030B-452E-BA91-A8BB110FA225}.Debug|x86.Build.0 = Debug|Any CPU
+		{E6264CAD-030B-452E-BA91-A8BB110FA225}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E6264CAD-030B-452E-BA91-A8BB110FA225}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E6264CAD-030B-452E-BA91-A8BB110FA225}.Release|x64.ActiveCfg = Release|Any CPU
+		{E6264CAD-030B-452E-BA91-A8BB110FA225}.Release|x64.Build.0 = Release|Any CPU
+		{E6264CAD-030B-452E-BA91-A8BB110FA225}.Release|x86.ActiveCfg = Release|Any CPU
+		{E6264CAD-030B-452E-BA91-A8BB110FA225}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -112,5 +126,6 @@ Global
 		{2DA27A41-B1C2-440B-9181-4B3DA1488661} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{AA88691D-4892-4836-A327-C064C134420C} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{223E73C7-BBEB-4D34-8397-D6F6DD0DD86B} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{E6264CAD-030B-452E-BA91-A8BB110FA225} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

@@ -74,19 +74,30 @@ public sealed class ComponentInspectionNativeTests
     }
 
     [TestMethod]
-    public void Production_di_registration_resolves_sources_and_hosted_workers()
+    public void Production_di_registration_resolves_task011_and_task012_service_graph()
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<IHostApplicationLifetime, TestHostLifetime>();
+        services.AddSingleton<ServiceStatusStore>();
+        services.AddSingleton<SystemHealthStore>();
+        services.AddSingleton<ActivityStore>();
+        services.AddSingleton<ScanCapabilityStore>();
         services.AddSingleton<ComponentInspectionStore>();
         services.AddSingleton<ComponentInspectionSource>();
         services.AddSingleton<ComponentIntegrityStore>();
         services.AddSingleton<ComponentIntegritySource>();
         services.AddSingleton<TrustedManifestIntegrityStore>();
         services.AddSingleton<TrustedManifestIntegritySource>();
+        services.AddSingleton<CommandAuditStore>();
+        services.AddSingleton<CommandRequestRegistry>();
+        services.AddSingleton<CommandRejectionLogLimiter>();
+        services.AddSingleton<TrustedManifestRefreshCoordinator>();
         services.AddHostedService<ComponentInspectionWorker>();
         services.AddHostedService<ComponentIntegrityWorker>();
         services.AddHostedService<TrustedManifestIntegrityWorker>();
+        services.AddHostedService<StatusPipeWorker>();
+        services.AddHostedService<CommandPipeWorker>();
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
         Assert.IsNotNull(provider.GetRequiredService<ComponentInspectionSource>());
         Assert.IsTrue(provider.GetServices<IHostedService>().Any(worker => worker is ComponentInspectionWorker));
@@ -94,6 +105,13 @@ public sealed class ComponentInspectionNativeTests
         Assert.IsTrue(provider.GetServices<IHostedService>().Any(worker => worker is ComponentIntegrityWorker));
         Assert.IsNotNull(provider.GetRequiredService<TrustedManifestIntegritySource>());
         Assert.IsTrue(provider.GetServices<IHostedService>().Any(worker => worker is TrustedManifestIntegrityWorker));
+        Assert.IsNotNull(provider.GetRequiredService<TrustedManifestRefreshCoordinator>());
+        Assert.IsNotNull(provider.GetRequiredService<CommandAuditStore>());
+        Assert.IsNotNull(provider.GetRequiredService<CommandRequestRegistry>());
+        Assert.IsNotNull(provider.GetRequiredService<CommandRejectionLogLimiter>());
+        Assert.IsTrue(provider.GetServices<IHostedService>().Any(worker => worker is StatusPipeWorker));
+        Assert.IsTrue(provider.GetServices<IHostedService>().Any(worker => worker is CommandPipeWorker));
+        Assert.IsTrue(CommandCallerAuthorizer.Authorized(CommandCallerClassification.InteractiveUser));
     }
 
     [TestMethod]
@@ -338,6 +356,14 @@ public sealed class ComponentInspectionNativeTests
         }
         finally { File.Delete(path); }
     }
+}
+
+internal sealed class TestHostLifetime : IHostApplicationLifetime
+{
+    public CancellationToken ApplicationStarted => CancellationToken.None;
+    public CancellationToken ApplicationStopping => CancellationToken.None;
+    public CancellationToken ApplicationStopped => CancellationToken.None;
+    public void StopApplication() { }
 }
 
 internal sealed class SequenceOperations(string path, ComponentInspectionNative.Metadata first, ComponentInspectionNative.Metadata second) : IComponentInspectionHandleOperations

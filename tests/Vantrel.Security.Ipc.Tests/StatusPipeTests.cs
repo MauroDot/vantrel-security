@@ -143,6 +143,7 @@ public sealed class StatusPipeTests
     [DataRow("not json")]
     [DataRow("{\"ProtocolVersion\":2,\"Type\":\"get_status\"}")]
     [DataRow("{\"ProtocolVersion\":1,\"Type\":\"execute\"}")]
+    [DataRow("{\"ProtocolVersion\":1,\"Command\":\"refresh_trusted_manifest_integrity\",\"RequestId\":\"0123456789abcdef0123456789abcdef\"}")]
     public async Task Worker_rejects_malformed_or_unsupported_requests(string request)
     {
         var pipeName = NewPipeName();

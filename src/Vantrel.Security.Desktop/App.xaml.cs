@@ -30,6 +30,7 @@ public partial class App : Application
                 (IComponentIntegrityClient)services.GetRequiredService<ISecurityServiceStatusClient>());
             builder.Services.AddSingleton<ITrustedManifestIntegrityClient>(services =>
                 (ITrustedManifestIntegrityClient)services.GetRequiredService<ISecurityServiceStatusClient>());
+            builder.Services.AddSingleton<ITrustedManifestRefreshCommandClient, NamedPipeCommandClient>();
             builder.Services.AddSingleton<MainWindow>();
             _host = builder.Build();
             await _host.StartAsync();

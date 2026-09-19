@@ -137,19 +137,17 @@ internal static class TrustedManifestPublicKey
     internal static readonly byte[] SubjectPublicKeyInfo = Convert.FromBase64String("MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQB/yA4nU8K0EkKlqELYb3Udxsek/UWTa/8VqNeLQj+brJ4dHCB/0LaJAPdrK5tLICfT4XrBZFJkJEtEEiHj9BQ==");
 }
 
-public sealed class TrustedManifestIntegrityWorker(TrustedManifestIntegrityStore store, TrustedManifestIntegritySource source, ILogger<TrustedManifestIntegrityWorker> logger) : BackgroundService
+public sealed class TrustedManifestIntegrityWorker(TrustedManifestRefreshCoordinator coordinator, ILogger<TrustedManifestIntegrityWorker> logger) : BackgroundService
 {
-    private readonly SemaphoreSlim _oneAtATime = new(1, 1);
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
         {
-            await Task.Yield(); await SampleAsync(stoppingToken); logger.LogInformation("Trusted manifest integrity sampling started");
+            await Task.Yield(); await coordinator.RefreshScheduledAsync(stoppingToken); logger.LogInformation("Trusted manifest integrity sampling started");
             using var timer = new PeriodicTimer(TimeSpan.FromMinutes(15));
-            while (await timer.WaitForNextTickAsync(stoppingToken)) await SampleAsync(stoppingToken);
+            while (await timer.WaitForNextTickAsync(stoppingToken)) await coordinator.RefreshScheduledAsync(stoppingToken);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
         finally { logger.LogInformation("Trusted manifest integrity sampling stopped"); }
     }
-    private async Task SampleAsync(CancellationToken token) { await _oneAtATime.WaitAsync(token); try { store.Update(await source.CollectAsync(token)); } finally { _oneAtATime.Release(); } }
 }

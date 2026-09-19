@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     private readonly IComponentInspectionClient _componentInspectionClient;
     private readonly IComponentIntegrityClient _componentIntegrityClient;
     private readonly ITrustedManifestIntegrityClient _trustedManifestIntegrityClient;
+    private readonly ITrustedManifestRefreshCommandClient _trustedManifestRefreshCommandClient;
     private readonly ILogger<MainWindow> _logger;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private CancellationTokenSource? _refreshCancellation;
@@ -24,9 +25,13 @@ public partial class MainWindow : Window
     private bool _inspectionWasDisconnected;
     private bool _integrityWasDisconnected;
     private bool _trustedManifestWasDisconnected;
+    private bool _statusConnected;
+    private TrustedManifestIntegritySnapshot? _lastTrustedManifestSnapshot;
+    private readonly TrustedManifestRefreshRequestState _trustedManifestRefresh = new();
+    private CancellationTokenSource? _trustedManifestRefreshCancellation;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
-        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient, ITrustedManifestIntegrityClient trustedManifestIntegrityClient,
+        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient, ITrustedManifestIntegrityClient trustedManifestIntegrityClient, ITrustedManifestRefreshCommandClient trustedManifestRefreshCommandClient,
         ILogger<MainWindow> logger)
     {
         _client = client;
@@ -36,6 +41,7 @@ public partial class MainWindow : Window
         _componentInspectionClient = componentInspectionClient;
         _componentIntegrityClient = componentIntegrityClient;
         _trustedManifestIntegrityClient = trustedManifestIntegrityClient;
+        _trustedManifestRefreshCommandClient = trustedManifestRefreshCommandClient;
         _logger = logger;
         InitializeComponent();
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
@@ -49,6 +55,7 @@ public partial class MainWindow : Window
         {
             _refreshTimer.Stop();
             _refreshCancellation?.Cancel();
+            _trustedManifestRefreshCancellation?.Cancel();
         };
     }
 
@@ -62,6 +69,7 @@ public partial class MainWindow : Window
         {
             var status = await _client.GetStatusAsync(cancellation.Token);
             if (cancellation.IsCancellationRequested) return;
+            _statusConnected = status is not null;
             ServiceStatusText.Text = status is null ? "Disconnected" : "Connected";
             ServiceVersionText.Text = status is null ? "Service version: —" : $"Service version: {status.Version}";
             ProtectionStatusText.Text = status?.Protection == ProtectionState.Protected ? "Protected" : "Unavailable";
@@ -90,6 +98,12 @@ public partial class MainWindow : Window
             if (status is null) _inspectionWasDisconnected = true;
             if (status is null) _integrityWasDisconnected = true;
             if (status is null) _trustedManifestWasDisconnected = true;
+            if (status is null && _trustedManifestRefresh.IsInFlight)
+            {
+                _trustedManifestRefreshCancellation?.Cancel();
+                _trustedManifestRefresh.Complete();
+                RefreshIntegrityStatusText.Text = "Refresh stopped because the service disconnected.";
+            }
             if (ScanPanel.Visibility == Visibility.Visible)
             {
                 var capability = status is null ? null :
@@ -104,7 +118,15 @@ public partial class MainWindow : Window
                 RenderComponentIntegrity(integrity, status is not null);
                 var trustedManifest = status is null ? null : await _trustedManifestIntegrityClient.GetTrustedManifestIntegrityAsync(cancellation.Token);
                 if (cancellation.IsCancellationRequested) return;
+                if (trustedManifest is not null) _lastTrustedManifestSnapshot = trustedManifest;
+                if (_trustedManifestRefresh.HasNewerStatusSnapshot(trustedManifest))
+                {
+                    _trustedManifestRefresh.Complete();
+                    _trustedManifestRefreshCancellation?.Cancel();
+                    RefreshIntegrityStatusText.Text = "Refresh completed from a newer service sample.";
+                }
                 RenderTrustedManifestIntegrity(trustedManifest, status is not null);
+                UpdateRefreshIntegrityControl();
             }
             _logger.LogInformation("Service status query completed: {Connected}", status is not null);
         }
@@ -112,6 +134,7 @@ public partial class MainWindow : Window
         catch (Exception error)
         {
             ServiceStatusText.Text = "Disconnected";
+            _statusConnected = false;
             ServiceVersionText.Text = "Service version: —";
             ProtectionStatusText.Text = "Unavailable";
             HeartbeatText.Text = "Status could not be read.";
@@ -125,6 +148,13 @@ public partial class MainWindow : Window
             if (ScanPanel.Visibility == Visibility.Visible) RenderComponentInspection(null, false);
             if (ScanPanel.Visibility == Visibility.Visible) RenderComponentIntegrity(null, false);
             if (ScanPanel.Visibility == Visibility.Visible) RenderTrustedManifestIntegrity(null, false);
+            if (_trustedManifestRefresh.IsInFlight)
+            {
+                _trustedManifestRefreshCancellation?.Cancel();
+                _trustedManifestRefresh.Complete();
+                RefreshIntegrityStatusText.Text = "Refresh stopped because the service disconnected.";
+            }
+            UpdateRefreshIntegrityControl();
             _logger.LogError(error, "Unexpected service status error");
         }
     }
@@ -155,6 +185,89 @@ public partial class MainWindow : Window
             { SignatureState: TrustedManifestSignatureState.UnsupportedSchema } => "Manifest authentication: Unsupported schema. No component comparison was accepted.",
             _ => "Manifest authentication: unavailable."
         };
+    }
+
+    private async void RefreshIntegrityClicked(object sender, RoutedEventArgs e)
+    {
+        if (!_trustedManifestRefresh.TryBegin(_statusConnected, _lastTrustedManifestSnapshot, out var requestId) || requestId is null) return;
+        _trustedManifestRefreshCancellation?.Cancel();
+        _trustedManifestRefreshCancellation?.Dispose();
+        _trustedManifestRefreshCancellation = new CancellationTokenSource();
+        var cancellation = _trustedManifestRefreshCancellation;
+        RefreshIntegrityStatusText.Text = "Refreshing…";
+        UpdateRefreshIntegrityControl();
+        try
+        {
+            var response = await _trustedManifestRefreshCommandClient.RefreshTrustedManifestIntegrityAsync(requestId, cancellation.Token);
+            if (cancellation.IsCancellationRequested) return;
+            if (response is null)
+            {
+                EndRefresh("Refresh request was unavailable; the last service sample remains displayed.");
+                return;
+            }
+            if (response.Result is not (CommandResult.Accepted or CommandResult.AlreadyInProgress))
+            {
+                EndRefresh(response.Result switch
+                {
+                    CommandResult.Duplicate => "Refresh request was already recorded; no completion was inferred.",
+                    CommandResult.Rejected => "Refresh request was not accepted; the last service sample remains displayed.",
+                    _ => "Refresh request was unavailable; the last service sample remains displayed."
+                });
+                return;
+            }
+            RefreshIntegrityStatusText.Text = "Refreshing… waiting for a newer service sample.";
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(TrustedManifestRefreshRequestState.TimeoutSeconds));
+            while (!timeout.IsCancellationRequested)
+            {
+                var status = await _client.GetStatusAsync(timeout.Token);
+                if (status is null)
+                {
+                    _statusConnected = false;
+                    EndRefresh("Refresh stopped because the service disconnected.");
+                    return;
+                }
+                var snapshot = await _trustedManifestIntegrityClient.GetTrustedManifestIntegrityAsync(timeout.Token);
+                if (_trustedManifestRefresh.HasNewerStatusSnapshot(snapshot))
+                {
+                    _lastTrustedManifestSnapshot = snapshot;
+                    _trustedManifestRefresh.Complete();
+                    RenderTrustedManifestIntegrity(snapshot, true);
+                    RefreshIntegrityStatusText.Text = "Refresh completed from a newer service sample.";
+                    UpdateRefreshIntegrityControl();
+                    return;
+                }
+                await Task.Delay(TrustedManifestRefreshRequestState.PollMilliseconds, timeout.Token);
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            if (_trustedManifestRefresh.IsInFlight)
+                EndRefresh("Refresh was cancelled; the last service sample remains displayed.");
+        }
+        catch (OperationCanceledException)
+        {
+            EndRefresh("Refresh did not complete within the expected time; the last service sample remains displayed.");
+        }
+        catch (Exception)
+        {
+            EndRefresh("Refresh request was unavailable; the last service sample remains displayed.");
+        }
+    }
+
+    private void EndRefresh(string message)
+    {
+        _trustedManifestRefresh.Complete();
+        RefreshIntegrityStatusText.Text = message;
+        UpdateRefreshIntegrityControl();
+    }
+
+    private void UpdateRefreshIntegrityControl()
+    {
+        var presentation = TrustedManifestRefreshControlPresentation.Create(
+            _statusConnected, _trustedManifestRefresh.IsInFlight, RefreshIntegrityStatusText.Text);
+        RefreshIntegrityButton.IsEnabled = presentation.IsEnabled;
+        RefreshIntegrityStatusText.Text = presentation.StatusText;
     }
 
     private void RenderComponentInspection(ComponentInspectionSnapshot? inspection, bool connected)
