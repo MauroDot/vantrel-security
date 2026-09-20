@@ -10,7 +10,7 @@ namespace Vantrel.Security.Infrastructure;
 
 public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISystemHealthClient, IActivityClient,
     IScanCapabilityClient, IComponentInspectionClient, IComponentIntegrityClient, ITrustedManifestIntegrityClient,
-    IStatusConnectionDiagnostics
+    IIntegrityRefreshAuditClient, IStatusConnectionDiagnostics
 {
     private readonly string _pipeName;
     private readonly TimeSpan _timeout;
@@ -62,6 +62,8 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISyste
         QueryAsync(StatusProtocol.CreateComponentIntegrityRequest(), ReadComponentIntegrity, cancellationToken);
     public Task<TrustedManifestIntegritySnapshot?> GetTrustedManifestIntegrityAsync(CancellationToken cancellationToken) =>
         QueryAsync(StatusProtocol.CreateTrustedManifestIntegrityRequest(), ReadTrustedManifestIntegrity, cancellationToken);
+    public Task<IntegrityRefreshAuditSnapshot?> GetIntegrityRefreshAuditAsync(CancellationToken cancellationToken) =>
+        QueryAsync(StatusProtocol.CreateIntegrityRefreshAuditRequest(), ReadIntegrityRefreshAudit, cancellationToken);
 
     private static (SecurityServiceStatus?, StatusResponseFailure) ReadStatus(byte[] frame)
     {
@@ -97,6 +99,10 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISyste
     private static (TrustedManifestIntegritySnapshot?, StatusResponseFailure) ReadTrustedManifestIntegrity(byte[] frame)
     {
         StatusProtocol.TryReadTrustedManifestIntegrityResponse(frame, out var value, out var failure); return (value, failure);
+    }
+    private static (IntegrityRefreshAuditSnapshot?, StatusResponseFailure) ReadIntegrityRefreshAudit(byte[] frame)
+    {
+        StatusProtocol.TryReadIntegrityRefreshAuditResponse(frame, out var value, out var failure); return (value, failure);
     }
 
     private async Task<T?> QueryAsync<T>(byte[] request,

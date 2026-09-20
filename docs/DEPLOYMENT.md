@@ -90,3 +90,7 @@ Because the manifest authenticates the service executable as well as the three V
 ## Task 012 release signing requirement
 
 Task 012 changes the signed service release unit and therefore requires a new Task 011-format trusted manifest after the final service publish. Finalize the publish first, hash the seven fixed service files, create canonical LF/UTF-8-without-BOM manifest bytes, sign externally with the protected P-256 key, verify the DER signature and all seven hashes, and do not rebuild afterward. The command pipe and desktop refresh button do not accept release files or signing input.
+
+## Task 013 release signing requirement
+
+Task 013 changes the service release unit while retaining the same seven-component trusted-manifest design. After final service publish, generate and externally sign a new canonical manifest for exactly those seven service files, verify the DER signature and every hash, and do not rebuild afterward. The new read-only audit view does not accept release, manifest, target, or signing input.

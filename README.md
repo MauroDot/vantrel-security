@@ -93,3 +93,7 @@ Task 011 installed LocalService validation passed on 2026-09-19. The signed sour
 ## Task 012 bounded integrity refresh
 
 Task 012 adds a separate local `Vantrel.Security.Command.v1` pipe for exactly one fixed interactive-user command: `refresh_trusted_manifest_integrity`. It accepts no path, target, option, hash, or manifest input. The command pipe rejects remote clients in the kernel, grants only the Interactive SID's required duplex rights, and authorizes a caller only while briefly impersonating to inspect its token; collection runs later as LocalService. The non-elevated desktop's **Refresh integrity** button sends one fresh bounded request and shows completion only after a newer signed-manifest snapshot arrives through the unchanged read-only status pipe. Command responses never contain integrity truth.
+
+## Task 013 read-only integrity refresh activity
+
+Task 013 adds the eighth fixed, parameter-free Status.v1 query, `get_integrity_refresh_audit`. It exposes at most the newest 16 authorized integrity-refresh lifecycle outcomes from the current memory-only service session; the internal command audit remains bounded at 32 entries. It contains no request IDs, identities, SIDs, tokens, paths, payloads, hashes, exception text, or integrity verdicts. Malformed and unauthorized attempts remain outside this public history. The Scan-page view is read-only: audit outcomes do not establish signed-manifest authentication or component-match truth, which remains available only through `get_trusted_manifest_integrity`.

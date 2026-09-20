@@ -115,7 +115,7 @@ public sealed class ComponentInspectionNativeTests
     }
 
     [TestMethod]
-    public async Task All_seven_fixed_queries_share_the_single_pipe()
+    public async Task All_eight_fixed_queries_share_the_single_pipe()
     {
         var pipe = $"Vantrel.Security.Test.{Guid.NewGuid():N}"; var status = new ServiceStatusStore();
         var health = new SystemHealthStore(); var activity = new ActivityStore(status); var scan = new ScanCapabilityStore(); var inspection = new ComponentInspectionStore();
@@ -123,12 +123,15 @@ public sealed class ComponentInspectionNativeTests
         inspection.Update(new ComponentInspectionSnapshot(DateTimeOffset.UtcNow, StatusProtocol.ComponentInspectionPolicyRevision, ComponentInspectionTarget.VantrelServiceAssembly, ComponentInspectionOutcome.Observed, ComponentInspectionReason.None, ComponentHashAlgorithm.Sha256, new string('A', 64), 1));
         var integrity = new ComponentIntegrityStore(); integrity.Update(new ComponentIntegritySnapshot(DateTimeOffset.UtcNow, StatusProtocol.ComponentIntegrityPolicyRevision, ComponentIntegrityTarget.VantrelCoreAssembly, ComponentHashAlgorithm.Sha256, ComponentIntegrityEvaluation.Match, null));
         var manifest = new TrustedManifestIntegrityStore(); manifest.Update(new TrustedManifestIntegritySnapshot(DateTimeOffset.UtcNow, StatusProtocol.TrustedManifestIntegrityPolicyRevision, TrustedManifestSignatureState.Valid, TrustedManifestInstallationEvaluation.AllMatch, null, null));
-        using var worker = new StatusPipeWorker(status, health, activity, scan, inspection, integrity, manifest, Microsoft.Extensions.Logging.Abstractions.NullLogger<StatusPipeWorker>.Instance, pipe);
+        var audit = new CommandAuditStore(); audit.Add("0123456789abcdef0123456789abcdef", CommandCallerClassification.InteractiveUser, CommandAuditOutcome.Completed);
+        using var worker = new StatusPipeWorker(status, health, activity, scan, inspection, integrity, manifest, audit, Microsoft.Extensions.Logging.Abstractions.NullLogger<StatusPipeWorker>.Instance, pipe);
         await worker.StartAsync(CancellationToken.None);
         try
         {
             var client = new Vantrel.Security.Infrastructure.NamedPipeStatusClient(pipe, TimeSpan.FromSeconds(2), true);
             Assert.IsNotNull(await client.GetStatusAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetSystemHealthAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetActivityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetScanCapabilityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetComponentInspectionAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetComponentIntegrityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetTrustedManifestIntegrityAsync(CancellationToken.None));
+            var publicAudit = await client.GetIntegrityRefreshAuditAsync(CancellationToken.None);
+            Assert.IsNotNull(publicAudit); Assert.AreEqual(1, publicAudit.Entries.Length); Assert.AreEqual(IntegrityRefreshAuditOutcome.Completed, publicAudit.Entries[0].Outcome);
         }
         finally { await worker.StopAsync(CancellationToken.None); }
     }

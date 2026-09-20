@@ -13,6 +13,7 @@ public sealed class StatusPipeWorker : BackgroundService
     private readonly ComponentInspectionStore _componentInspectionStore;
     private readonly ComponentIntegrityStore _componentIntegrityStore;
     private readonly TrustedManifestIntegrityStore _trustedManifestIntegrityStore;
+    private readonly CommandAuditStore _commandAuditStore;
     private readonly ILogger<StatusPipeWorker> _logger;
     private readonly string _pipeName;
     private DateTimeOffset _lastExpectedErrorLogUtc = DateTimeOffset.MinValue;
@@ -21,39 +22,46 @@ public sealed class StatusPipeWorker : BackgroundService
     private DateTimeOffset _lastResponseConsumedLogUtc = DateTimeOffset.MinValue;
 
     public StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
-        ScanCapabilityStore scanCapabilityStore, ComponentInspectionStore componentInspectionStore, ComponentIntegrityStore componentIntegrityStore, TrustedManifestIntegrityStore trustedManifestIntegrityStore, ILogger<StatusPipeWorker> logger)
-        : this(store, healthStore, activityStore, scanCapabilityStore, componentInspectionStore, componentIntegrityStore, trustedManifestIntegrityStore, logger, StatusProtocol.PipeName) { }
+        ScanCapabilityStore scanCapabilityStore, ComponentInspectionStore componentInspectionStore, ComponentIntegrityStore componentIntegrityStore, TrustedManifestIntegrityStore trustedManifestIntegrityStore, CommandAuditStore commandAuditStore, ILogger<StatusPipeWorker> logger)
+        : this(store, healthStore, activityStore, scanCapabilityStore, componentInspectionStore, componentIntegrityStore, trustedManifestIntegrityStore, commandAuditStore, logger, StatusProtocol.PipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, ILogger<StatusPipeWorker> logger, string pipeName)
-        : this(store, new SystemHealthStore(), new ActivityStore(store), new ScanCapabilityStore(), new ComponentInspectionStore(), new ComponentIntegrityStore(), new TrustedManifestIntegrityStore(), logger, pipeName) { }
+        : this(store, new SystemHealthStore(), new ActivityStore(store), new ScanCapabilityStore(), new ComponentInspectionStore(), new ComponentIntegrityStore(), new TrustedManifestIntegrityStore(), new CommandAuditStore(), logger, pipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore,
         ILogger<StatusPipeWorker> logger, string pipeName)
-        : this(store, healthStore, new ActivityStore(store), new ScanCapabilityStore(), new ComponentInspectionStore(), new ComponentIntegrityStore(), new TrustedManifestIntegrityStore(), logger, pipeName) { }
+        : this(store, healthStore, new ActivityStore(store), new ScanCapabilityStore(), new ComponentInspectionStore(), new ComponentIntegrityStore(), new TrustedManifestIntegrityStore(), new CommandAuditStore(), logger, pipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
         ILogger<StatusPipeWorker> logger, string pipeName)
-        : this(store, healthStore, activityStore, new ScanCapabilityStore(), new ComponentInspectionStore(), new ComponentIntegrityStore(), new TrustedManifestIntegrityStore(), logger, pipeName) { }
+        : this(store, healthStore, activityStore, new ScanCapabilityStore(), new ComponentInspectionStore(), new ComponentIntegrityStore(), new TrustedManifestIntegrityStore(), new CommandAuditStore(), logger, pipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
         ScanCapabilityStore scanCapabilityStore, ILogger<StatusPipeWorker> logger, string pipeName)
-        : this(store, healthStore, activityStore, scanCapabilityStore, new ComponentInspectionStore(), new ComponentIntegrityStore(), new TrustedManifestIntegrityStore(), logger, pipeName) { }
+        : this(store, healthStore, activityStore, scanCapabilityStore, new ComponentInspectionStore(), new ComponentIntegrityStore(), new TrustedManifestIntegrityStore(), new CommandAuditStore(), logger, pipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
         ScanCapabilityStore scanCapabilityStore, ComponentInspectionStore componentInspectionStore,
         ILogger<StatusPipeWorker> logger, string pipeName)
-        : this(store, healthStore, activityStore, scanCapabilityStore, componentInspectionStore, new ComponentIntegrityStore(), new TrustedManifestIntegrityStore(), logger, pipeName) { }
+        : this(store, healthStore, activityStore, scanCapabilityStore, componentInspectionStore, new ComponentIntegrityStore(), new TrustedManifestIntegrityStore(), new CommandAuditStore(), logger, pipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
         ScanCapabilityStore scanCapabilityStore, ComponentInspectionStore componentInspectionStore,
         ComponentIntegrityStore componentIntegrityStore,
         ILogger<StatusPipeWorker> logger, string pipeName)
-        : this(store, healthStore, activityStore, scanCapabilityStore, componentInspectionStore, componentIntegrityStore, new TrustedManifestIntegrityStore(), logger, pipeName) { }
+        : this(store, healthStore, activityStore, scanCapabilityStore, componentInspectionStore, componentIntegrityStore, new TrustedManifestIntegrityStore(), new CommandAuditStore(), logger, pipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
         ScanCapabilityStore scanCapabilityStore, ComponentInspectionStore componentInspectionStore,
         ComponentIntegrityStore componentIntegrityStore, TrustedManifestIntegrityStore trustedManifestIntegrityStore,
         ILogger<StatusPipeWorker> logger, string pipeName)
+        : this(store, healthStore, activityStore, scanCapabilityStore, componentInspectionStore, componentIntegrityStore,
+            trustedManifestIntegrityStore, new CommandAuditStore(), logger, pipeName) { }
+
+    internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
+        ScanCapabilityStore scanCapabilityStore, ComponentInspectionStore componentInspectionStore,
+        ComponentIntegrityStore componentIntegrityStore, TrustedManifestIntegrityStore trustedManifestIntegrityStore,
+        CommandAuditStore commandAuditStore, ILogger<StatusPipeWorker> logger, string pipeName)
     {
         _store = store;
         _healthStore = healthStore;
@@ -62,6 +70,7 @@ public sealed class StatusPipeWorker : BackgroundService
         _componentInspectionStore = componentInspectionStore;
         _componentIntegrityStore = componentIntegrityStore;
         _trustedManifestIntegrityStore = trustedManifestIntegrityStore;
+        _commandAuditStore = commandAuditStore;
         _logger = logger;
         _pipeName = pipeName;
     }
@@ -114,7 +123,9 @@ public sealed class StatusPipeWorker : BackgroundService
                             StatusProtocol.RequestKind.ScanCapability => StatusProtocol.CreateScanCapabilityResponse(_scanCapabilityStore.Snapshot()!),
                             StatusProtocol.RequestKind.ComponentInspection => StatusProtocol.CreateComponentInspectionResponse(_componentInspectionStore.Snapshot()!),
                             StatusProtocol.RequestKind.ComponentIntegrity => StatusProtocol.CreateComponentIntegrityResponse(_componentIntegrityStore.Snapshot()!),
-                            _ => StatusProtocol.CreateTrustedManifestIntegrityResponse(_trustedManifestIntegrityStore.Snapshot()!)
+                            StatusProtocol.RequestKind.TrustedManifestIntegrity => StatusProtocol.CreateTrustedManifestIntegrityResponse(_trustedManifestIntegrityStore.Snapshot()!),
+                            StatusProtocol.RequestKind.IntegrityRefreshAudit => StatusProtocol.CreateIntegrityRefreshAuditResponse(_commandAuditStore.PublicSnapshot(_store.Snapshot().StartedAtUtc, DateTimeOffset.UtcNow)),
+                            _ => throw new InvalidOperationException("Unexpected fixed status request.")
                         };
                         await PipeMessages.WriteAsync(pipe, response, timeout.Token);
                         // DisconnectNamedPipe discards bytes the client has not read yet. The

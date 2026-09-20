@@ -4,6 +4,7 @@ using Vantrel.Security.Service;
 using System.Security.Principal;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Text;
 
 namespace Vantrel.Security.Ipc.Tests;
 
@@ -85,6 +86,50 @@ public sealed class CommandBoundaryTests
         var values = audit.Snapshot();
         Assert.AreEqual(32, values.Length); Assert.AreEqual(Ids[39], values[0].RequestId); Assert.AreEqual(Ids[8], values[^1].RequestId);
         Assert.IsTrue(values.All(value => value.Caller == CommandCallerClassification.InteractiveUser && CommandProtocol.IsValidRequestId(value.RequestId)));
+    }
+
+    [TestMethod]
+    public void Public_audit_projection_is_newest_first_limited_to_16_and_excludes_rejections()
+    {
+        var now = DateTimeOffset.UtcNow; var audit = new CommandAuditStore(() => now);
+        audit.Add(Ids[0], CommandCallerClassification.Anonymous, CommandAuditOutcome.Rejected);
+        for (var i = 1; i <= 20; i++) { now = now.AddSeconds(1); audit.Add(Ids[i], CommandCallerClassification.InteractiveUser, CommandAuditOutcome.Completed); }
+        var snapshot = audit.PublicSnapshot(now.AddMinutes(-1), now);
+        Assert.AreEqual(16, snapshot.Entries.Length);
+        Assert.IsTrue(snapshot.Entries.All(entry => entry.Command == IntegrityRefreshAuditCommandKind.RefreshTrustedManifestIntegrity &&
+            entry.Caller == CommandCallerClassification.InteractiveUser && entry.Outcome == IntegrityRefreshAuditOutcome.Completed));
+        Assert.AreEqual(now, snapshot.Entries[0].OccurredAtUtc);
+        Assert.AreEqual(now.AddSeconds(-15), snapshot.Entries[^1].OccurredAtUtc);
+        Assert.AreEqual(21, audit.Snapshot().Length);
+    }
+
+    [TestMethod]
+    public void Public_audit_projection_has_no_private_command_or_integrity_fields_and_new_session_is_empty()
+    {
+        var now = DateTimeOffset.UtcNow; var audit = new CommandAuditStore(() => now);
+        audit.Add(Ids[0], CommandCallerClassification.InteractiveUser, CommandAuditOutcome.Completed);
+        var bytes = StatusProtocol.CreateIntegrityRefreshAuditResponse(audit.PublicSnapshot(now.AddMinutes(-1), now));
+        var text = Encoding.UTF8.GetString(bytes);
+        foreach (var forbidden in new[] { "RequestId", "User", "Sid", "Token", "Process", "Path", "Manifest", "Hash", "Exception", "SignatureState", "Evaluation" })
+            Assert.IsFalse(text.Contains(forbidden, StringComparison.Ordinal), forbidden);
+        Assert.AreEqual(0, new CommandAuditStore(() => now).PublicSnapshot(now, now).Entries.Length);
+    }
+
+    [TestMethod]
+    public async Task Public_audit_projection_is_immutable_and_safe_during_concurrent_writes()
+    {
+        var audit = new CommandAuditStore();
+        var writes = Enumerable.Range(0, 64).Select(index => Task.Run(() =>
+            audit.Add(Ids[index], CommandCallerClassification.InteractiveUser, CommandAuditOutcome.Completed)));
+        var reads = Enumerable.Range(0, 64).Select(_ => Task.Run(() =>
+        {
+            var snapshot = audit.PublicSnapshot(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow);
+            Assert.IsTrue(snapshot.Entries.Length <= 16);
+            Assert.IsTrue(snapshot.Entries.All(entry => entry.Caller == CommandCallerClassification.InteractiveUser));
+        }));
+        await Task.WhenAll(writes.Concat(reads));
+        var stable = audit.PublicSnapshot(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow);
+        Assert.AreEqual(16, stable.Entries.Length);
     }
 
     [TestMethod]

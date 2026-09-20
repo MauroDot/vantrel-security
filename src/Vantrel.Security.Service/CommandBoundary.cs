@@ -19,6 +19,40 @@ public sealed class CommandAuditStore
         var entry = new CommandAuditEntry(id, caller, outcome, _clock());
         lock (_gate) _entries = _entries.Insert(0, entry).Take(32).ToImmutableArray();
     }
+
+    public IntegrityRefreshAuditSnapshot PublicSnapshot(DateTimeOffset serviceStartedAtUtc, DateTimeOffset capturedAtUtc)
+    {
+        lock (_gate)
+        {
+            var entries = _entries.Where(entry => entry.Caller == CommandCallerClassification.InteractiveUser &&
+                    TryProjectAuthorizedOutcome(entry.Outcome, out _))
+                .Take(16)
+                .Select(entry => new IntegrityRefreshAuditRecord(
+                    IntegrityRefreshAuditCommandKind.RefreshTrustedManifestIntegrity,
+                    CommandCallerClassification.InteractiveUser,
+                    ProjectAuthorizedOutcome(entry.Outcome), entry.TimestampUtc))
+                .ToImmutableArray();
+            return new IntegrityRefreshAuditSnapshot(serviceStartedAtUtc, capturedAtUtc, entries);
+        }
+    }
+
+    private static IntegrityRefreshAuditOutcome ProjectAuthorizedOutcome(CommandAuditOutcome outcome) => outcome switch
+    {
+        CommandAuditOutcome.Accepted => IntegrityRefreshAuditOutcome.Accepted,
+        CommandAuditOutcome.AlreadyInProgress => IntegrityRefreshAuditOutcome.AlreadyInProgress,
+        CommandAuditOutcome.Duplicate => IntegrityRefreshAuditOutcome.Duplicate,
+        CommandAuditOutcome.RateLimited => IntegrityRefreshAuditOutcome.RateLimited,
+        CommandAuditOutcome.Completed => IntegrityRefreshAuditOutcome.Completed,
+        CommandAuditOutcome.Failed => IntegrityRefreshAuditOutcome.Failed,
+        CommandAuditOutcome.Cancelled => IntegrityRefreshAuditOutcome.Cancelled,
+        _ => throw new ArgumentOutOfRangeException(nameof(outcome))
+    };
+
+    private static bool TryProjectAuthorizedOutcome(CommandAuditOutcome outcome, out IntegrityRefreshAuditOutcome projected)
+    {
+        if (outcome == CommandAuditOutcome.Rejected) { projected = default; return false; }
+        projected = ProjectAuthorizedOutcome(outcome); return true;
+    }
 }
 
 public static class CommandCallerAuthorizer

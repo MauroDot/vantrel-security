@@ -764,3 +764,7 @@ Task 010 installed LocalService validation passed: the non-elevated desktop stay
 ## Task 012 bounded integrity refresh
 
 Task 012 adds a non-elevated **Refresh integrity** button beside the existing signed installation integrity display. It can request only the fixed local command `refresh_trusted_manifest_integrity`; it accepts no file, path, target, manifest, hash, or option. The desktop shows completion only after the normal status pipe returns a newer signed-installation integrity sample. A command admission response is not a Valid, AllMatch, mismatch, or other integrity conclusion. The Task 012 release must be published, signed, and verified as a new seven-component manifest unit before any installed validation.
+
+## Task 013 read-only integrity refresh activity
+
+Task 013 adds only the fixed parameter-free Status.v1 request `get_integrity_refresh_audit`. It displays the newest 16 authorized integrity-refresh lifecycle records from the current memory-only service session; the internal audit stays capped at 32. The read-only view exposes no request IDs, identities, paths, hashes, payloads, errors, or integrity verdicts, and malformed or unauthorized attempts remain outside it. A service restart resets the history. Audit entries never mean the manifest is valid or that components match; use the signed installation integrity section for that result.

@@ -48,7 +48,7 @@ public sealed class CommandPipeWorker : BackgroundService
                     // Admission and reservation are one critical section: an in-progress result never consumes capacity.
                     var result = registry.AdmitAndReserve(requestId, () => coordinator.TryRefreshCommand(requestId, caller));
                     var reason = result == CommandResult.Rejected ? CommandFailureReason.RateLimited : CommandFailureReason.None;
-                    audit.Add(requestId, caller, result switch { CommandResult.Accepted => CommandAuditOutcome.Accepted, CommandResult.Duplicate => CommandAuditOutcome.Duplicate, CommandResult.Rejected => CommandAuditOutcome.RateLimited, _ => CommandAuditOutcome.Rejected });
+                    audit.Add(requestId, caller, result switch { CommandResult.Accepted => CommandAuditOutcome.Accepted, CommandResult.AlreadyInProgress => CommandAuditOutcome.AlreadyInProgress, CommandResult.Duplicate => CommandAuditOutcome.Duplicate, CommandResult.Rejected => CommandAuditOutcome.RateLimited, _ => CommandAuditOutcome.Rejected });
                     await Reply(pipe, requestId, result, reason, timeout.Token);
                     if (result == CommandResult.Accepted) logger.LogInformation("Authorized command accepted");
                 }

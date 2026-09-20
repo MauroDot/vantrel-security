@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     private readonly IComponentInspectionClient _componentInspectionClient;
     private readonly IComponentIntegrityClient _componentIntegrityClient;
     private readonly ITrustedManifestIntegrityClient _trustedManifestIntegrityClient;
+    private readonly IIntegrityRefreshAuditClient _integrityRefreshAuditClient;
     private readonly ITrustedManifestRefreshCommandClient _trustedManifestRefreshCommandClient;
     private readonly ILogger<MainWindow> _logger;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(10) };
@@ -25,13 +26,14 @@ public partial class MainWindow : Window
     private bool _inspectionWasDisconnected;
     private bool _integrityWasDisconnected;
     private bool _trustedManifestWasDisconnected;
+    private bool _integrityRefreshAuditWasDisconnected;
     private bool _statusConnected;
     private TrustedManifestIntegritySnapshot? _lastTrustedManifestSnapshot;
     private readonly TrustedManifestRefreshRequestState _trustedManifestRefresh = new();
     private CancellationTokenSource? _trustedManifestRefreshCancellation;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
-        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient, ITrustedManifestIntegrityClient trustedManifestIntegrityClient, ITrustedManifestRefreshCommandClient trustedManifestRefreshCommandClient,
+        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient, ITrustedManifestIntegrityClient trustedManifestIntegrityClient, IIntegrityRefreshAuditClient integrityRefreshAuditClient, ITrustedManifestRefreshCommandClient trustedManifestRefreshCommandClient,
         ILogger<MainWindow> logger)
     {
         _client = client;
@@ -41,6 +43,7 @@ public partial class MainWindow : Window
         _componentInspectionClient = componentInspectionClient;
         _componentIntegrityClient = componentIntegrityClient;
         _trustedManifestIntegrityClient = trustedManifestIntegrityClient;
+        _integrityRefreshAuditClient = integrityRefreshAuditClient;
         _trustedManifestRefreshCommandClient = trustedManifestRefreshCommandClient;
         _logger = logger;
         InitializeComponent();
@@ -98,6 +101,7 @@ public partial class MainWindow : Window
             if (status is null) _inspectionWasDisconnected = true;
             if (status is null) _integrityWasDisconnected = true;
             if (status is null) _trustedManifestWasDisconnected = true;
+            if (status is null) _integrityRefreshAuditWasDisconnected = true;
             if (status is null && _trustedManifestRefresh.IsInFlight)
             {
                 _trustedManifestRefreshCancellation?.Cancel();
@@ -126,6 +130,9 @@ public partial class MainWindow : Window
                     RefreshIntegrityStatusText.Text = "Refresh completed from a newer service sample.";
                 }
                 RenderTrustedManifestIntegrity(trustedManifest, status is not null);
+                var refreshAudit = status is null ? null : await _integrityRefreshAuditClient.GetIntegrityRefreshAuditAsync(cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                RenderIntegrityRefreshAudit(refreshAudit, status is not null);
                 UpdateRefreshIntegrityControl();
             }
             _logger.LogInformation("Service status query completed: {Connected}", status is not null);
@@ -148,6 +155,7 @@ public partial class MainWindow : Window
             if (ScanPanel.Visibility == Visibility.Visible) RenderComponentInspection(null, false);
             if (ScanPanel.Visibility == Visibility.Visible) RenderComponentIntegrity(null, false);
             if (ScanPanel.Visibility == Visibility.Visible) RenderTrustedManifestIntegrity(null, false);
+            if (ScanPanel.Visibility == Visibility.Visible) RenderIntegrityRefreshAudit(null, false);
             if (_trustedManifestRefresh.IsInFlight)
             {
                 _trustedManifestRefreshCancellation?.Cancel();
@@ -186,6 +194,29 @@ public partial class MainWindow : Window
             _ => "Manifest authentication: unavailable."
         };
     }
+
+    private void RenderIntegrityRefreshAudit(IntegrityRefreshAuditSnapshot? audit, bool connected)
+    {
+        var state = IntegrityRefreshAuditPresentation.State(audit, connected, _integrityRefreshAuditWasDisconnected);
+        IntegrityRefreshAuditStateText.Text = state switch
+        {
+            IntegrityRefreshAuditDisplayState.Disconnected => "Disconnected - service unavailable",
+            IntegrityRefreshAuditDisplayState.Unavailable => "Unavailable - integrity refresh activity could not be read",
+            IntegrityRefreshAuditDisplayState.Empty => "No authorized integrity refresh activity in this service session",
+            IntegrityRefreshAuditDisplayState.Recovered => "Recovered - current integrity refresh activity",
+            _ => "Current integrity refresh activity"
+        };
+        if (state == IntegrityRefreshAuditDisplayState.Disconnected) _integrityRefreshAuditWasDisconnected = true;
+        else if (state is IntegrityRefreshAuditDisplayState.Current or IntegrityRefreshAuditDisplayState.Recovered or IntegrityRefreshAuditDisplayState.Empty)
+            _integrityRefreshAuditWasDisconnected = false;
+        var visible = connected ? audit : null;
+        IntegrityRefreshAuditSessionText.Text = visible is null ? "Current service session only: unavailable" :
+            $"Current service session only. Service start: {visible.ServiceStartedAtUtc.ToLocalTime():G}";
+        IntegrityRefreshAuditEntries.ItemsSource = visible?.Entries.Select(FormatIntegrityRefreshAudit).ToArray() ?? [];
+    }
+
+    private static string FormatIntegrityRefreshAudit(IntegrityRefreshAuditRecord entry) =>
+        $"Integrity refresh {entry.Outcome} - {entry.OccurredAtUtc.ToLocalTime():G}";
 
     private async void RefreshIntegrityClicked(object sender, RoutedEventArgs e)
     {
