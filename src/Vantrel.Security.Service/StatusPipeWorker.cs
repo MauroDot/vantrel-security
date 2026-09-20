@@ -13,6 +13,7 @@ public sealed class StatusPipeWorker : BackgroundService
     private readonly ComponentInspectionStore _componentInspectionStore;
     private readonly ComponentIntegrityStore _componentIntegrityStore;
     private readonly TrustedManifestIntegrityStore _trustedManifestIntegrityStore;
+    private readonly TrustedManifestIntegrityHistoryStore _trustedManifestIntegrityHistoryStore;
     private readonly CommandAuditStore _commandAuditStore;
     private readonly ILogger<StatusPipeWorker> _logger;
     private readonly string _pipeName;
@@ -22,8 +23,8 @@ public sealed class StatusPipeWorker : BackgroundService
     private DateTimeOffset _lastResponseConsumedLogUtc = DateTimeOffset.MinValue;
 
     public StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
-        ScanCapabilityStore scanCapabilityStore, ComponentInspectionStore componentInspectionStore, ComponentIntegrityStore componentIntegrityStore, TrustedManifestIntegrityStore trustedManifestIntegrityStore, CommandAuditStore commandAuditStore, ILogger<StatusPipeWorker> logger)
-        : this(store, healthStore, activityStore, scanCapabilityStore, componentInspectionStore, componentIntegrityStore, trustedManifestIntegrityStore, commandAuditStore, logger, StatusProtocol.PipeName) { }
+        ScanCapabilityStore scanCapabilityStore, ComponentInspectionStore componentInspectionStore, ComponentIntegrityStore componentIntegrityStore, TrustedManifestIntegrityStore trustedManifestIntegrityStore, TrustedManifestIntegrityHistoryStore trustedManifestIntegrityHistoryStore, CommandAuditStore commandAuditStore, ILogger<StatusPipeWorker> logger)
+        : this(store, healthStore, activityStore, scanCapabilityStore, componentInspectionStore, componentIntegrityStore, trustedManifestIntegrityStore, trustedManifestIntegrityHistoryStore, commandAuditStore, logger, StatusProtocol.PipeName) { }
 
     internal StatusPipeWorker(ServiceStatusStore store, ILogger<StatusPipeWorker> logger, string pipeName)
         : this(store, new SystemHealthStore(), new ActivityStore(store), new ScanCapabilityStore(), new ComponentInspectionStore(), new ComponentIntegrityStore(), new TrustedManifestIntegrityStore(), new CommandAuditStore(), logger, pipeName) { }
@@ -62,6 +63,13 @@ public sealed class StatusPipeWorker : BackgroundService
         ScanCapabilityStore scanCapabilityStore, ComponentInspectionStore componentInspectionStore,
         ComponentIntegrityStore componentIntegrityStore, TrustedManifestIntegrityStore trustedManifestIntegrityStore,
         CommandAuditStore commandAuditStore, ILogger<StatusPipeWorker> logger, string pipeName)
+        : this(store, healthStore, activityStore, scanCapabilityStore, componentInspectionStore, componentIntegrityStore,
+            trustedManifestIntegrityStore, new TrustedManifestIntegrityHistoryStore(), commandAuditStore, logger, pipeName) { }
+
+    internal StatusPipeWorker(ServiceStatusStore store, SystemHealthStore healthStore, ActivityStore activityStore,
+        ScanCapabilityStore scanCapabilityStore, ComponentInspectionStore componentInspectionStore,
+        ComponentIntegrityStore componentIntegrityStore, TrustedManifestIntegrityStore trustedManifestIntegrityStore,
+        TrustedManifestIntegrityHistoryStore trustedManifestIntegrityHistoryStore, CommandAuditStore commandAuditStore, ILogger<StatusPipeWorker> logger, string pipeName)
     {
         _store = store;
         _healthStore = healthStore;
@@ -70,6 +78,7 @@ public sealed class StatusPipeWorker : BackgroundService
         _componentInspectionStore = componentInspectionStore;
         _componentIntegrityStore = componentIntegrityStore;
         _trustedManifestIntegrityStore = trustedManifestIntegrityStore;
+        _trustedManifestIntegrityHistoryStore = trustedManifestIntegrityHistoryStore;
         _commandAuditStore = commandAuditStore;
         _logger = logger;
         _pipeName = pipeName;
@@ -125,6 +134,8 @@ public sealed class StatusPipeWorker : BackgroundService
                             StatusProtocol.RequestKind.ComponentIntegrity => StatusProtocol.CreateComponentIntegrityResponse(_componentIntegrityStore.Snapshot()!),
                             StatusProtocol.RequestKind.TrustedManifestIntegrity => StatusProtocol.CreateTrustedManifestIntegrityResponse(_trustedManifestIntegrityStore.Snapshot()!),
                             StatusProtocol.RequestKind.IntegrityRefreshAudit => StatusProtocol.CreateIntegrityRefreshAuditResponse(_commandAuditStore.PublicSnapshot(_store.Snapshot().StartedAtUtc, DateTimeOffset.UtcNow)),
+                            StatusProtocol.RequestKind.TrustedManifestIntegrityHistory => StatusProtocol.CreateTrustedManifestIntegrityHistoryResponse(
+                                new TrustedManifestIntegrityHistorySnapshot(_store.Snapshot().StartedAtUtc, DateTimeOffset.UtcNow, _trustedManifestIntegrityHistoryStore.Snapshot())),
                             _ => throw new InvalidOperationException("Unexpected fixed status request.")
                         };
                         await PipeMessages.WriteAsync(pipe, response, timeout.Token);

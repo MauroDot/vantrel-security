@@ -27,6 +27,7 @@ builder.Services.AddSingleton<ScanCapabilityStore>();
 builder.Services.AddSingleton<ComponentInspectionStore>();
 builder.Services.AddSingleton<ComponentIntegrityStore>();
 builder.Services.AddSingleton<TrustedManifestIntegrityStore>();
+builder.Services.AddSingleton<TrustedManifestIntegrityHistoryStore>();
 builder.Services.AddSingleton<CommandAuditStore>();
 builder.Services.AddSingleton<CommandRequestRegistry>();
 builder.Services.AddSingleton<CommandRejectionLogLimiter>();

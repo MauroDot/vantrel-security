@@ -10,7 +10,7 @@ namespace Vantrel.Security.Infrastructure;
 
 public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISystemHealthClient, IActivityClient,
     IScanCapabilityClient, IComponentInspectionClient, IComponentIntegrityClient, ITrustedManifestIntegrityClient,
-    IIntegrityRefreshAuditClient, IStatusConnectionDiagnostics
+    IIntegrityRefreshAuditClient, ITrustedManifestIntegrityHistoryClient, IStatusConnectionDiagnostics
 {
     private readonly string _pipeName;
     private readonly TimeSpan _timeout;
@@ -64,6 +64,8 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISyste
         QueryAsync(StatusProtocol.CreateTrustedManifestIntegrityRequest(), ReadTrustedManifestIntegrity, cancellationToken);
     public Task<IntegrityRefreshAuditSnapshot?> GetIntegrityRefreshAuditAsync(CancellationToken cancellationToken) =>
         QueryAsync(StatusProtocol.CreateIntegrityRefreshAuditRequest(), ReadIntegrityRefreshAudit, cancellationToken);
+    public Task<TrustedManifestIntegrityHistorySnapshot?> GetTrustedManifestIntegrityHistoryAsync(CancellationToken cancellationToken) =>
+        QueryAsync(StatusProtocol.CreateTrustedManifestIntegrityHistoryRequest(), ReadTrustedManifestIntegrityHistory, cancellationToken);
 
     private static (SecurityServiceStatus?, StatusResponseFailure) ReadStatus(byte[] frame)
     {
@@ -103,6 +105,10 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISyste
     private static (IntegrityRefreshAuditSnapshot?, StatusResponseFailure) ReadIntegrityRefreshAudit(byte[] frame)
     {
         StatusProtocol.TryReadIntegrityRefreshAuditResponse(frame, out var value, out var failure); return (value, failure);
+    }
+    private static (TrustedManifestIntegrityHistorySnapshot?, StatusResponseFailure) ReadTrustedManifestIntegrityHistory(byte[] frame)
+    {
+        StatusProtocol.TryReadTrustedManifestIntegrityHistoryResponse(frame, out var value, out var failure); return (value, failure);
     }
 
     private async Task<T?> QueryAsync<T>(byte[] request,

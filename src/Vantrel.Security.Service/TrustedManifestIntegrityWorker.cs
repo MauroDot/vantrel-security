@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Collections.Immutable;
 using System.Security.Cryptography;
 using Microsoft.Extensions.Hosting.WindowsServices;
 using Vantrel.Security.Core;
@@ -10,6 +11,19 @@ public sealed class TrustedManifestIntegrityStore
     private TrustedManifestIntegritySnapshot? _snapshot;
     public TrustedManifestIntegritySnapshot? Snapshot() => Volatile.Read(ref _snapshot);
     public void Update(TrustedManifestIntegritySnapshot snapshot) => Volatile.Write(ref _snapshot, snapshot);
+}
+
+/// <summary>Bounded immutable history of snapshots that were already published as current integrity state.</summary>
+public sealed class TrustedManifestIntegrityHistoryStore
+{
+    private const int MaximumEntries = 12;
+    private ImmutableArray<TrustedManifestIntegrityHistoryRecord> _entries = [];
+    public ImmutableArray<TrustedManifestIntegrityHistoryRecord> Snapshot() { lock (this) return _entries; }
+    public void AppendPublished(TrustedManifestIntegritySnapshot snapshot)
+    {
+        var entry = new TrustedManifestIntegrityHistoryRecord(snapshot.SampledAtUtc, snapshot.SignatureState, snapshot.Evaluation);
+        lock (this) _entries = _entries.Insert(0, entry).Take(MaximumEntries).ToImmutableArray();
+    }
 }
 
 /// <summary>Authenticates a fixed signed manifest, then compares exactly seven fixed installed files.</summary>

@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json;
 
 namespace Vantrel.Security.Core;
@@ -17,7 +18,8 @@ public enum StatusResponseFailure
     InvalidComponentInspection,
     InvalidComponentIntegrity,
     InvalidTrustedManifestIntegrity,
-    InvalidIntegrityRefreshAudit
+    InvalidIntegrityRefreshAudit,
+    InvalidTrustedManifestIntegrityHistory
 }
 
 public static class StatusProtocol
@@ -36,8 +38,9 @@ public static class StatusProtocol
     private sealed record ComponentIntegrityResponse(int ProtocolVersion, string Type, ComponentIntegritySnapshot Integrity);
     private sealed record TrustedManifestIntegrityResponse(int ProtocolVersion, string Type, TrustedManifestIntegritySnapshot Integrity);
     private sealed record IntegrityRefreshAuditResponse(int ProtocolVersion, string Type, IntegrityRefreshAuditSnapshot Audit);
+    private sealed record TrustedManifestIntegrityHistoryResponse(int ProtocolVersion, string Type, TrustedManifestIntegrityHistorySnapshot History);
 
-    public enum RequestKind { Invalid, Status, SystemHealth, Activity, ScanCapability, ComponentInspection, ComponentIntegrity, TrustedManifestIntegrity, IntegrityRefreshAudit }
+    public enum RequestKind { Invalid, Status, SystemHealth, Activity, ScanCapability, ComponentInspection, ComponentIntegrity, TrustedManifestIntegrity, IntegrityRefreshAudit, TrustedManifestIntegrityHistory }
 
     public static byte[] CreateRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_status"));
 
@@ -53,6 +56,7 @@ public static class StatusProtocol
     public static byte[] CreateComponentIntegrityRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_component_integrity"));
     public static byte[] CreateTrustedManifestIntegrityRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_trusted_manifest_integrity"));
     public static byte[] CreateIntegrityRefreshAuditRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_integrity_refresh_audit"));
+    public static byte[] CreateTrustedManifestIntegrityHistoryRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_trusted_manifest_integrity_history"));
 
     public static bool IsValidRequest(ReadOnlySpan<byte> utf8) => ReadRequestKind(utf8) == RequestKind.Status;
 
@@ -73,6 +77,7 @@ public static class StatusProtocol
                 "get_component_integrity" when HasOnlyFixedRequestFields(utf8) => RequestKind.ComponentIntegrity,
                 "get_trusted_manifest_integrity" when HasOnlyFixedRequestFields(utf8) => RequestKind.TrustedManifestIntegrity,
                 "get_integrity_refresh_audit" when HasOnlyFixedRequestFields(utf8) => RequestKind.IntegrityRefreshAudit,
+                "get_trusted_manifest_integrity_history" when HasOnlyFixedRequestFields(utf8) => RequestKind.TrustedManifestIntegrityHistory,
                 _ => RequestKind.Invalid
             };
         }
@@ -110,6 +115,48 @@ public static class StatusProtocol
         JsonSerializer.SerializeToUtf8Bytes(new TrustedManifestIntegrityResponse(Version, "trusted_manifest_integrity", integrity));
     public static byte[] CreateIntegrityRefreshAuditResponse(IntegrityRefreshAuditSnapshot audit) =>
         JsonSerializer.SerializeToUtf8Bytes(new IntegrityRefreshAuditResponse(Version, "integrity_refresh_audit", audit));
+    public static byte[] CreateTrustedManifestIntegrityHistoryResponse(TrustedManifestIntegrityHistorySnapshot history) =>
+        JsonSerializer.SerializeToUtf8Bytes(new TrustedManifestIntegrityHistoryResponse(Version, "trusted_manifest_integrity_history", history));
+
+    public static bool TryReadTrustedManifestIntegrityHistoryResponse(ReadOnlySpan<byte> utf8,
+        out TrustedManifestIntegrityHistorySnapshot? history, out StatusResponseFailure failure)
+    {
+        history = null;
+        failure = utf8.Length switch { 0 => StatusResponseFailure.Empty, > MaximumMessageBytes => StatusResponseFailure.Oversized, _ => StatusResponseFailure.None };
+        if (failure != StatusResponseFailure.None) return false;
+        try
+        {
+            var response = JsonSerializer.Deserialize<TrustedManifestIntegrityHistoryResponse>(utf8);
+            var value = response?.History;
+            if (response is null || value is null) { failure = StatusResponseFailure.MalformedJson; return false; }
+            if (response.ProtocolVersion != Version) { failure = StatusResponseFailure.UnsupportedVersion; return false; }
+            if (response.Type != "trusted_manifest_integrity_history") { failure = StatusResponseFailure.UnexpectedType; return false; }
+            if (!HasExactTrustedManifestIntegrityHistoryShape(utf8) || value.ServiceStartedAtUtc == default ||
+                value.CapturedAtUtc == default || value.ServiceStartedAtUtc.Offset != TimeSpan.Zero ||
+                value.CapturedAtUtc.Offset != TimeSpan.Zero || value.ServiceStartedAtUtc > value.CapturedAtUtc ||
+                value.CapturedAtUtc > DateTimeOffset.UtcNow.AddMinutes(1) || value.Entries.IsDefault ||
+                value.Entries.Length > 12 || value.Entries.Any(entry => entry is null || entry.SampledAtUtc == default ||
+                    entry.SampledAtUtc.Offset != TimeSpan.Zero || entry.SampledAtUtc < value.ServiceStartedAtUtc ||
+                    entry.SampledAtUtc > value.CapturedAtUtc || !Enum.IsDefined(entry.SignatureState) ||
+                    !Enum.IsDefined(entry.Evaluation)) || !NewestFirst(value.Entries))
+            { failure = StatusResponseFailure.InvalidTrustedManifestIntegrityHistory; return false; }
+            history = value; return true;
+        }
+        catch (JsonException) { failure = StatusResponseFailure.MalformedJson; return false; }
+    }
+
+    private static bool HasExactTrustedManifestIntegrityHistoryShape(ReadOnlySpan<byte> utf8)
+    {
+        using var document = JsonDocument.Parse(utf8.ToArray()); var root = document.RootElement;
+        if (!HasFields(root, "ProtocolVersion", "Type", "History") ||
+            !HasFields(root.GetProperty("History"), "ServiceStartedAtUtc", "CapturedAtUtc", "Entries")) return false;
+        var entries = root.GetProperty("History").GetProperty("Entries");
+        return entries.ValueKind == JsonValueKind.Array && entries.EnumerateArray().All(entry =>
+            HasFields(entry, "SampledAtUtc", "SignatureState", "Evaluation"));
+    }
+
+    private static bool NewestFirst(ImmutableArray<TrustedManifestIntegrityHistoryRecord> entries) =>
+        entries.Zip(entries.Skip(1)).All(pair => pair.First.SampledAtUtc >= pair.Second.SampledAtUtc);
 
     public static bool TryReadIntegrityRefreshAuditResponse(ReadOnlySpan<byte> utf8,
         out IntegrityRefreshAuditSnapshot? audit, out StatusResponseFailure failure)

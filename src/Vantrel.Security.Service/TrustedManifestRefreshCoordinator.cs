@@ -3,7 +3,7 @@ using Vantrel.Security.Core;
 namespace Vantrel.Security.Service;
 
 /// <summary>Single fixed Task 011 collection path for scheduled and authorized immediate refreshes.</summary>
-public sealed class TrustedManifestRefreshCoordinator(TrustedManifestIntegrityStore store, TrustedManifestIntegritySource source,
+public sealed class TrustedManifestRefreshCoordinator(TrustedManifestIntegrityStore store, TrustedManifestIntegrityHistoryStore historyStore, TrustedManifestIntegritySource source,
     CommandAuditStore audit, IHostApplicationLifetime lifetime, ILogger<TrustedManifestRefreshCoordinator> logger)
 {
     private readonly Func<CancellationToken, Task<TrustedManifestIntegritySnapshot>> _collect = source.CollectAsync;
@@ -12,7 +12,7 @@ public sealed class TrustedManifestRefreshCoordinator(TrustedManifestIntegritySt
     public async Task RefreshScheduledAsync(CancellationToken token)
     {
         if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0) return;
-        try { store.Update(await _collect(token)); }
+        try { Publish(await _collect(token)); }
         finally { Volatile.Write(ref _busy, 0); }
     }
     public bool TryRefreshCommand(string requestId, CommandCallerClassification caller)
@@ -22,7 +22,7 @@ public sealed class TrustedManifestRefreshCoordinator(TrustedManifestIntegritySt
         {
             try
             {
-                store.Update(await _collect(lifetime.ApplicationStopping));
+                Publish(await _collect(lifetime.ApplicationStopping));
                 audit.Add(requestId, caller, CommandAuditOutcome.Completed);
                 logger.LogInformation("Command refresh completed");
             }
@@ -32,6 +32,14 @@ public sealed class TrustedManifestRefreshCoordinator(TrustedManifestIntegritySt
         });
         return true;
     }
+    private void Publish(TrustedManifestIntegritySnapshot snapshot)
+    {
+        store.Update(snapshot);
+        historyStore.AppendPublished(snapshot);
+    }
+    internal TrustedManifestRefreshCoordinator(TrustedManifestIntegrityStore store, TrustedManifestIntegrityHistoryStore historyStore, Func<CancellationToken, Task<TrustedManifestIntegritySnapshot>> collect,
+        CommandAuditStore audit, IHostApplicationLifetime lifetime, ILogger<TrustedManifestRefreshCoordinator> logger) : this(store, historyStore, new TrustedManifestIntegritySource(), audit, lifetime, logger) { _collect = collect; }
     internal TrustedManifestRefreshCoordinator(TrustedManifestIntegrityStore store, Func<CancellationToken, Task<TrustedManifestIntegritySnapshot>> collect,
-        CommandAuditStore audit, IHostApplicationLifetime lifetime, ILogger<TrustedManifestRefreshCoordinator> logger) : this(store, new TrustedManifestIntegritySource(), audit, lifetime, logger) { _collect = collect; }
+        CommandAuditStore audit, IHostApplicationLifetime lifetime, ILogger<TrustedManifestRefreshCoordinator> logger)
+        : this(store, new TrustedManifestIntegrityHistoryStore(), collect, audit, lifetime, logger) { }
 }

@@ -94,3 +94,7 @@ Task 012 changes the signed service release unit and therefore requires a new Ta
 ## Task 013 release signing requirement
 
 Task 013 changes the service release unit while retaining the same seven-component trusted-manifest design. After final service publish, generate and externally sign a new canonical manifest for exactly those seven service files, verify the DER signature and every hash, and do not rebuild afterward. The new read-only audit view does not accept release, manifest, target, or signing input.
+
+## Task 014 release signing requirement
+
+Task 014 changes the service release unit while retaining exactly the same seven trusted service components. After the final service publish, regenerate the canonical manifest from those seven files, sign it externally with the protected P-256 key, verify its DER signature and all seven hashes, and do not rebuild the signed service payload. The desktop history view is not added to the seven-component manifest. The new Status.v1 history query accepts no release, manifest, target, signing, or command input.

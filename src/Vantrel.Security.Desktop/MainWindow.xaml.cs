@@ -17,6 +17,7 @@ public partial class MainWindow : Window
     private readonly IComponentIntegrityClient _componentIntegrityClient;
     private readonly ITrustedManifestIntegrityClient _trustedManifestIntegrityClient;
     private readonly IIntegrityRefreshAuditClient _integrityRefreshAuditClient;
+    private readonly ITrustedManifestIntegrityHistoryClient _trustedManifestIntegrityHistoryClient;
     private readonly ITrustedManifestRefreshCommandClient _trustedManifestRefreshCommandClient;
     private readonly ILogger<MainWindow> _logger;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(10) };
@@ -27,13 +28,15 @@ public partial class MainWindow : Window
     private bool _integrityWasDisconnected;
     private bool _trustedManifestWasDisconnected;
     private bool _integrityRefreshAuditWasDisconnected;
+    private bool _trustedManifestHistoryWasDisconnected;
+    private DateTimeOffset? _trustedManifestHistoryServiceStartedAtUtc;
     private bool _statusConnected;
     private TrustedManifestIntegritySnapshot? _lastTrustedManifestSnapshot;
     private readonly TrustedManifestRefreshRequestState _trustedManifestRefresh = new();
     private CancellationTokenSource? _trustedManifestRefreshCancellation;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
-        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient, ITrustedManifestIntegrityClient trustedManifestIntegrityClient, IIntegrityRefreshAuditClient integrityRefreshAuditClient, ITrustedManifestRefreshCommandClient trustedManifestRefreshCommandClient,
+        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient, ITrustedManifestIntegrityClient trustedManifestIntegrityClient, IIntegrityRefreshAuditClient integrityRefreshAuditClient, ITrustedManifestIntegrityHistoryClient trustedManifestIntegrityHistoryClient, ITrustedManifestRefreshCommandClient trustedManifestRefreshCommandClient,
         ILogger<MainWindow> logger)
     {
         _client = client;
@@ -44,6 +47,7 @@ public partial class MainWindow : Window
         _componentIntegrityClient = componentIntegrityClient;
         _trustedManifestIntegrityClient = trustedManifestIntegrityClient;
         _integrityRefreshAuditClient = integrityRefreshAuditClient;
+        _trustedManifestIntegrityHistoryClient = trustedManifestIntegrityHistoryClient;
         _trustedManifestRefreshCommandClient = trustedManifestRefreshCommandClient;
         _logger = logger;
         InitializeComponent();
@@ -102,6 +106,7 @@ public partial class MainWindow : Window
             if (status is null) _integrityWasDisconnected = true;
             if (status is null) _trustedManifestWasDisconnected = true;
             if (status is null) _integrityRefreshAuditWasDisconnected = true;
+            if (status is null) _trustedManifestHistoryWasDisconnected = true;
             if (status is null && _trustedManifestRefresh.IsInFlight)
             {
                 _trustedManifestRefreshCancellation?.Cancel();
@@ -133,6 +138,9 @@ public partial class MainWindow : Window
                 var refreshAudit = status is null ? null : await _integrityRefreshAuditClient.GetIntegrityRefreshAuditAsync(cancellation.Token);
                 if (cancellation.IsCancellationRequested) return;
                 RenderIntegrityRefreshAudit(refreshAudit, status is not null);
+                var history = status is null ? null : await _trustedManifestIntegrityHistoryClient.GetTrustedManifestIntegrityHistoryAsync(cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                RenderTrustedManifestIntegrityHistory(history, status is not null);
                 UpdateRefreshIntegrityControl();
             }
             _logger.LogInformation("Service status query completed: {Connected}", status is not null);
@@ -156,6 +164,7 @@ public partial class MainWindow : Window
             if (ScanPanel.Visibility == Visibility.Visible) RenderComponentIntegrity(null, false);
             if (ScanPanel.Visibility == Visibility.Visible) RenderTrustedManifestIntegrity(null, false);
             if (ScanPanel.Visibility == Visibility.Visible) RenderIntegrityRefreshAudit(null, false);
+            if (ScanPanel.Visibility == Visibility.Visible) RenderTrustedManifestIntegrityHistory(null, false);
             if (_trustedManifestRefresh.IsInFlight)
             {
                 _trustedManifestRefreshCancellation?.Cancel();
@@ -217,6 +226,30 @@ public partial class MainWindow : Window
 
     private static string FormatIntegrityRefreshAudit(IntegrityRefreshAuditRecord entry) =>
         $"Integrity refresh {entry.Outcome} - {entry.OccurredAtUtc.ToLocalTime():G}";
+
+    private void RenderTrustedManifestIntegrityHistory(TrustedManifestIntegrityHistorySnapshot? history, bool connected)
+    {
+        var reset = history is not null && _trustedManifestHistoryServiceStartedAtUtc is { } previous &&
+            previous != history.ServiceStartedAtUtc;
+        var state = TrustedManifestIntegrityHistoryPresentation.State(history, connected, _trustedManifestHistoryWasDisconnected, reset);
+        TrustedManifestHistoryStateText.Text = state switch
+        {
+            TrustedManifestIntegrityHistoryDisplayState.Disconnected => "Disconnected - service unavailable",
+            TrustedManifestIntegrityHistoryDisplayState.Unavailable => "Unavailable - signed installation integrity history could not be read",
+            TrustedManifestIntegrityHistoryDisplayState.Empty => "No signed installation integrity history in this service session",
+            TrustedManifestIntegrityHistoryDisplayState.Recovered => "Recovered - current signed installation integrity history",
+            TrustedManifestIntegrityHistoryDisplayState.Reset => "Reset - new service session has no prior history",
+            _ => "Current signed installation integrity history"
+        };
+        if (history is not null) _trustedManifestHistoryServiceStartedAtUtc = history.ServiceStartedAtUtc;
+        if (state == TrustedManifestIntegrityHistoryDisplayState.Disconnected) _trustedManifestHistoryWasDisconnected = true;
+        else if (state is not TrustedManifestIntegrityHistoryDisplayState.Unavailable) _trustedManifestHistoryWasDisconnected = false;
+        var visible = connected ? history : null;
+        TrustedManifestHistorySessionText.Text = visible is null ? "Current service session only: unavailable" :
+            $"Current service session only. Service start: {visible.ServiceStartedAtUtc.ToLocalTime():G}";
+        TrustedManifestHistoryEntries.ItemsSource = visible?.Entries.Select(entry =>
+            $"{entry.SampledAtUtc.ToLocalTime():G} - {entry.SignatureState} / {entry.Evaluation}").ToArray() ?? [];
+    }
 
     private async void RefreshIntegrityClicked(object sender, RoutedEventArgs e)
     {

@@ -133,6 +133,68 @@ public sealed class CommandBoundaryTests
     }
 
     [TestMethod]
+    public void Trusted_manifest_history_is_newest_first_bounded_and_session_scoped()
+    {
+        var history = new TrustedManifestIntegrityHistoryStore();
+        for (var i = 0; i < 16; i++) history.AppendPublished(new TrustedManifestIntegritySnapshot(
+            DateTimeOffset.UtcNow.AddSeconds(i), StatusProtocol.TrustedManifestIntegrityPolicyRevision,
+            TrustedManifestSignatureState.Valid, TrustedManifestInstallationEvaluation.AllMatch, null, null));
+        var entries = history.Snapshot();
+        Assert.AreEqual(12, entries.Length);
+        Assert.IsTrue(entries.Zip(entries.Skip(1)).All(pair => pair.First.SampledAtUtc >= pair.Second.SampledAtUtc));
+        Assert.AreEqual(0, new TrustedManifestIntegrityHistoryStore().Snapshot().Length);
+        Assert.IsTrue(typeof(TrustedManifestIntegrityHistoryRecord).GetProperties().Select(property => property.Name).OrderBy(name => name)
+            .SequenceEqual(new[] { "Evaluation", "SampledAtUtc", "SignatureState" }));
+    }
+
+    [TestMethod]
+    public async Task Coordinator_publishes_current_snapshot_before_appending_history_and_preserves_history_on_failure()
+    {
+        var current = new TrustedManifestIntegrityStore(); var history = new TrustedManifestIntegrityHistoryStore(); var sample = Sample();
+        var coordinator = new TrustedManifestRefreshCoordinator(current, history, _ => Task.FromResult(sample), new CommandAuditStore(), new Lifetime(), NullLogger<TrustedManifestRefreshCoordinator>.Instance);
+        await coordinator.RefreshScheduledAsync(CancellationToken.None);
+        Assert.AreSame(sample, current.Snapshot()); Assert.AreEqual(1, history.Snapshot().Length);
+        var failing = new TrustedManifestRefreshCoordinator(current, history, _ => Task.FromException<TrustedManifestIntegritySnapshot>(new IOException()), new CommandAuditStore(), new Lifetime(), NullLogger<TrustedManifestRefreshCoordinator>.Instance);
+        await Assert.ThrowsExceptionAsync<IOException>(() => failing.RefreshScheduledAsync(CancellationToken.None));
+        Assert.AreSame(sample, current.Snapshot()); Assert.AreEqual(1, history.Snapshot().Length);
+    }
+
+    [TestMethod]
+    public async Task Manual_refresh_uses_the_same_publication_path_and_shutdown_cancellation_does_not_append_history()
+    {
+        var current = new TrustedManifestIntegrityStore(); var history = new TrustedManifestIntegrityHistoryStore(); var audit = new CommandAuditStore();
+        var sample = Sample(); var stop = new CancellationTokenSource(); var lifetime = new TestLifetime(stop.Token);
+        var coordinator = new TrustedManifestRefreshCoordinator(current, history, _ => Task.FromResult(sample), audit, lifetime, NullLogger<TrustedManifestRefreshCoordinator>.Instance);
+        Assert.IsTrue(coordinator.TryRefreshCommand(Ids[0], CommandCallerClassification.InteractiveUser));
+        for (var i = 0; coordinator.IsBusy && i < 100; i++) await Task.Delay(5);
+        Assert.AreSame(sample, current.Snapshot()); Assert.AreEqual(1, history.Snapshot().Length);
+
+        stop.Cancel();
+        var cancelled = new TrustedManifestRefreshCoordinator(current, history,
+            token => Task.FromCanceled<TrustedManifestIntegritySnapshot>(token), audit, lifetime, NullLogger<TrustedManifestRefreshCoordinator>.Instance);
+        Assert.IsTrue(cancelled.TryRefreshCommand(Ids[1], CommandCallerClassification.InteractiveUser));
+        for (var i = 0; cancelled.IsBusy && i < 100; i++) await Task.Delay(5);
+        Assert.AreSame(sample, current.Snapshot()); Assert.AreEqual(1, history.Snapshot().Length);
+    }
+
+    [TestMethod]
+    public async Task Trusted_manifest_history_snapshots_are_immutable_and_safe_during_concurrent_publication()
+    {
+        var history = new TrustedManifestIntegrityHistoryStore();
+        var writes = Enumerable.Range(0, 64).Select(index => Task.Run(() => history.AppendPublished(new TrustedManifestIntegritySnapshot(
+            DateTimeOffset.UtcNow.AddTicks(index), StatusProtocol.TrustedManifestIntegrityPolicyRevision,
+            TrustedManifestSignatureState.Valid, TrustedManifestInstallationEvaluation.AllMatch, null, null))));
+        var reads = Enumerable.Range(0, 64).Select(_ => Task.Run(() =>
+        {
+            var snapshot = history.Snapshot();
+            Assert.IsTrue(snapshot.Length <= 12);
+            Assert.IsTrue(snapshot.Zip(snapshot.Skip(1)).All(pair => pair.First.SampledAtUtc >= pair.Second.SampledAtUtc));
+        }));
+        await Task.WhenAll(writes.Concat(reads));
+        Assert.AreEqual(12, history.Snapshot().Length);
+    }
+
+    [TestMethod]
     public async Task Coordinator_reserves_one_slot_and_serializes_command_and_scheduled_refreshes()
     {
         var store = new TrustedManifestIntegrityStore(); var audit = new CommandAuditStore(); var started = new TaskCompletionSource(); var release = new TaskCompletionSource(); var count = 0;
