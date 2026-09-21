@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     private readonly ITrustedManifestIntegrityClient _trustedManifestIntegrityClient;
     private readonly IIntegrityRefreshAuditClient _integrityRefreshAuditClient;
     private readonly ITrustedManifestIntegrityHistoryClient _trustedManifestIntegrityHistoryClient;
+    private readonly IReleaseProvenanceClient _releaseProvenanceClient;
     private readonly ITrustedManifestRefreshCommandClient _trustedManifestRefreshCommandClient;
     private readonly ILogger<MainWindow> _logger;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(10) };
@@ -29,6 +30,7 @@ public partial class MainWindow : Window
     private bool _trustedManifestWasDisconnected;
     private bool _integrityRefreshAuditWasDisconnected;
     private bool _trustedManifestHistoryWasDisconnected;
+    private bool _releaseProvenanceWasDisconnected;
     private DateTimeOffset? _trustedManifestHistoryServiceStartedAtUtc;
     private bool _statusConnected;
     private TrustedManifestIntegritySnapshot? _lastTrustedManifestSnapshot;
@@ -36,7 +38,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _trustedManifestRefreshCancellation;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
-        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient, ITrustedManifestIntegrityClient trustedManifestIntegrityClient, IIntegrityRefreshAuditClient integrityRefreshAuditClient, ITrustedManifestIntegrityHistoryClient trustedManifestIntegrityHistoryClient, ITrustedManifestRefreshCommandClient trustedManifestRefreshCommandClient,
+        IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient, ITrustedManifestIntegrityClient trustedManifestIntegrityClient, IIntegrityRefreshAuditClient integrityRefreshAuditClient, ITrustedManifestIntegrityHistoryClient trustedManifestIntegrityHistoryClient, IReleaseProvenanceClient releaseProvenanceClient, ITrustedManifestRefreshCommandClient trustedManifestRefreshCommandClient,
         ILogger<MainWindow> logger)
     {
         _client = client;
@@ -48,6 +50,7 @@ public partial class MainWindow : Window
         _trustedManifestIntegrityClient = trustedManifestIntegrityClient;
         _integrityRefreshAuditClient = integrityRefreshAuditClient;
         _trustedManifestIntegrityHistoryClient = trustedManifestIntegrityHistoryClient;
+        _releaseProvenanceClient = releaseProvenanceClient;
         _trustedManifestRefreshCommandClient = trustedManifestRefreshCommandClient;
         _logger = logger;
         InitializeComponent();
@@ -107,6 +110,7 @@ public partial class MainWindow : Window
             if (status is null) _trustedManifestWasDisconnected = true;
             if (status is null) _integrityRefreshAuditWasDisconnected = true;
             if (status is null) _trustedManifestHistoryWasDisconnected = true;
+            if (status is null) _releaseProvenanceWasDisconnected = true;
             if (status is null && _trustedManifestRefresh.IsInFlight)
             {
                 _trustedManifestRefreshCancellation?.Cancel();
@@ -135,6 +139,9 @@ public partial class MainWindow : Window
                     RefreshIntegrityStatusText.Text = "Refresh completed from a newer service sample.";
                 }
                 RenderTrustedManifestIntegrity(trustedManifest, status is not null);
+                var releaseProvenance = status is null ? null : await _releaseProvenanceClient.GetReleaseProvenanceAsync(cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                RenderReleaseProvenance(releaseProvenance, status is not null);
                 var refreshAudit = status is null ? null : await _integrityRefreshAuditClient.GetIntegrityRefreshAuditAsync(cancellation.Token);
                 if (cancellation.IsCancellationRequested) return;
                 RenderIntegrityRefreshAudit(refreshAudit, status is not null);
@@ -163,6 +170,7 @@ public partial class MainWindow : Window
             if (ScanPanel.Visibility == Visibility.Visible) RenderComponentInspection(null, false);
             if (ScanPanel.Visibility == Visibility.Visible) RenderComponentIntegrity(null, false);
             if (ScanPanel.Visibility == Visibility.Visible) RenderTrustedManifestIntegrity(null, false);
+            if (ScanPanel.Visibility == Visibility.Visible) RenderReleaseProvenance(null, false);
             if (ScanPanel.Visibility == Visibility.Visible) RenderIntegrityRefreshAudit(null, false);
             if (ScanPanel.Visibility == Visibility.Visible) RenderTrustedManifestIntegrityHistory(null, false);
             if (_trustedManifestRefresh.IsInFlight)
@@ -204,6 +212,18 @@ public partial class MainWindow : Window
         };
     }
 
+    private void RenderReleaseProvenance(ReleaseProvenanceSnapshot? provenance, bool connected)
+    {
+        var presentation = ReleaseProvenanceDesktopPresentation.Create(provenance, connected, DateTimeOffset.UtcNow,
+            _releaseProvenanceWasDisconnected);
+        ReleaseProvenanceStateText.Text = presentation.StateText;
+        ReleaseProvenanceSampleText.Text = presentation.SampleText;
+        ReleaseProvenanceValueText.Text = presentation.ValueText;
+        if (presentation.DisplayState == ReleaseProvenanceDisplayState.Disconnected)
+            _releaseProvenanceWasDisconnected = true;
+        else if (presentation.DisplayState is ReleaseProvenanceDisplayState.Current or ReleaseProvenanceDisplayState.Recovered)
+            _releaseProvenanceWasDisconnected = false;
+    }
     private void RenderIntegrityRefreshAudit(IntegrityRefreshAuditSnapshot? audit, bool connected)
     {
         var state = IntegrityRefreshAuditPresentation.State(audit, connected, _integrityRefreshAuditWasDisconnected);

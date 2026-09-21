@@ -93,7 +93,7 @@ public sealed class CommandPipeIntegrationTests
         for (var value = 0; value < 12; value++)
         {
             var id = value.ToString("x32");
-            Assert.AreEqual(CommandResult.Accepted, (await fixture.SendAsync(id)).Result);
+            Assert.AreEqual(CommandResult.Accepted, (await fixture.SendEventuallyAsync(id)).Result);
             await fixture.WaitForIdleAsync();
         }
         var rejected = await fixture.SendEventuallyAsync("f123456789abcdef0123456789abcdef");

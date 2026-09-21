@@ -19,7 +19,8 @@ public enum StatusResponseFailure
     InvalidComponentIntegrity,
     InvalidTrustedManifestIntegrity,
     InvalidIntegrityRefreshAudit,
-    InvalidTrustedManifestIntegrityHistory
+    InvalidTrustedManifestIntegrityHistory,
+    InvalidReleaseProvenance
 }
 
 public static class StatusProtocol
@@ -39,8 +40,9 @@ public static class StatusProtocol
     private sealed record TrustedManifestIntegrityResponse(int ProtocolVersion, string Type, TrustedManifestIntegritySnapshot Integrity);
     private sealed record IntegrityRefreshAuditResponse(int ProtocolVersion, string Type, IntegrityRefreshAuditSnapshot Audit);
     private sealed record TrustedManifestIntegrityHistoryResponse(int ProtocolVersion, string Type, TrustedManifestIntegrityHistorySnapshot History);
+    private sealed record ReleaseProvenanceResponse(int ProtocolVersion, string Type, ReleaseProvenanceSnapshot Provenance);
 
-    public enum RequestKind { Invalid, Status, SystemHealth, Activity, ScanCapability, ComponentInspection, ComponentIntegrity, TrustedManifestIntegrity, IntegrityRefreshAudit, TrustedManifestIntegrityHistory }
+    public enum RequestKind { Invalid, Status, SystemHealth, Activity, ScanCapability, ComponentInspection, ComponentIntegrity, TrustedManifestIntegrity, IntegrityRefreshAudit, TrustedManifestIntegrityHistory, ReleaseMetadata }
 
     public static byte[] CreateRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_status"));
 
@@ -57,6 +59,7 @@ public static class StatusProtocol
     public static byte[] CreateTrustedManifestIntegrityRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_trusted_manifest_integrity"));
     public static byte[] CreateIntegrityRefreshAuditRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_integrity_refresh_audit"));
     public static byte[] CreateTrustedManifestIntegrityHistoryRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_trusted_manifest_integrity_history"));
+    public static byte[] CreateReleaseMetadataRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_release_metadata"));
 
     public static bool IsValidRequest(ReadOnlySpan<byte> utf8) => ReadRequestKind(utf8) == RequestKind.Status;
 
@@ -78,6 +81,7 @@ public static class StatusProtocol
                 "get_trusted_manifest_integrity" when HasOnlyFixedRequestFields(utf8) => RequestKind.TrustedManifestIntegrity,
                 "get_integrity_refresh_audit" when HasOnlyFixedRequestFields(utf8) => RequestKind.IntegrityRefreshAudit,
                 "get_trusted_manifest_integrity_history" when HasOnlyFixedRequestFields(utf8) => RequestKind.TrustedManifestIntegrityHistory,
+                "get_release_metadata" when HasOnlyFixedRequestFields(utf8) => RequestKind.ReleaseMetadata,
                 _ => RequestKind.Invalid
             };
         }
@@ -118,6 +122,47 @@ public static class StatusProtocol
     public static byte[] CreateTrustedManifestIntegrityHistoryResponse(TrustedManifestIntegrityHistorySnapshot history) =>
         JsonSerializer.SerializeToUtf8Bytes(new TrustedManifestIntegrityHistoryResponse(Version, "trusted_manifest_integrity_history", history));
 
+    public static byte[] CreateReleaseMetadataResponse(ReleaseProvenanceSnapshot provenance) =>
+        JsonSerializer.SerializeToUtf8Bytes(new ReleaseProvenanceResponse(Version, "release_metadata", provenance));
+
+    public static bool TryReadReleaseMetadataResponse(ReadOnlySpan<byte> utf8, out ReleaseProvenanceSnapshot? provenance,
+        out StatusResponseFailure failure)
+    {
+        provenance = null;
+        failure = utf8.Length switch { 0 => StatusResponseFailure.Empty, > MaximumMessageBytes => StatusResponseFailure.Oversized, _ => StatusResponseFailure.None };
+        if (failure != StatusResponseFailure.None) return false;
+        try
+        {
+            var response = JsonSerializer.Deserialize<ReleaseProvenanceResponse>(utf8);
+            var value = response?.Provenance;
+            if (response is null || value is null) { failure = StatusResponseFailure.MalformedJson; return false; }
+            if (response.ProtocolVersion != Version) { failure = StatusResponseFailure.UnsupportedVersion; return false; }
+            if (response.Type != "release_metadata") { failure = StatusResponseFailure.UnexpectedType; return false; }
+            if (!HasExactReleaseMetadataShape(utf8) || value.SampledAtUtc == default || value.SampledAtUtc.Offset != TimeSpan.Zero ||
+                value.SampledAtUtc > DateTimeOffset.UtcNow.AddMinutes(1) || !Enum.IsDefined(value.MetadataSignatureState) ||
+                !Enum.IsDefined(value.ManifestBindingState) || !Enum.IsDefined(value.PolicyDecision) ||
+                !ValidProvenanceFields(value)) { failure = StatusResponseFailure.InvalidReleaseProvenance; return false; }
+            provenance = value; return true;
+        }
+        catch (JsonException) { failure = StatusResponseFailure.MalformedJson; return false; }
+    }
+
+    private static bool ValidProvenanceFields(ReleaseProvenanceSnapshot value)
+    {
+        var complete = value.MetadataSignatureState == ReleaseMetadataSignatureState.Valid;
+        if (!complete) return value.Product is null && value.Architecture is null && value.Channel is null && value.ReleaseSequence is null &&
+            value.DisplayVersion is null && value.ManifestSha256 is null && value.PolicyDecision == ReleasePolicyDecision.PolicyUnavailable;
+        return value.Product == ReleaseMetadataCodec.Product && value.Architecture == ReleaseMetadataCodec.Architecture &&
+            value.Channel == ReleaseMetadataCodec.Channel && value.ReleaseSequence is > 0 && value.DisplayVersion is { Length: > 0 and <= 64 } version &&
+            version.All(c => c is >= (char)0x21 and <= (char)0x7e && c is not '=') && IsUpperHash(value.ManifestSha256);
+    }
+
+    private static bool HasExactReleaseMetadataShape(ReadOnlySpan<byte> utf8)
+    {
+        using var document = JsonDocument.Parse(utf8.ToArray()); var root = document.RootElement;
+        return HasFields(root, "ProtocolVersion", "Type", "Provenance") && HasFields(root.GetProperty("Provenance"), "SampledAtUtc", "MetadataSignatureState",
+            "ManifestBindingState", "Product", "Architecture", "Channel", "ReleaseSequence", "DisplayVersion", "PolicyDecision", "ManifestSha256");
+    }
     public static bool TryReadTrustedManifestIntegrityHistoryResponse(ReadOnlySpan<byte> utf8,
         out TrustedManifestIntegrityHistorySnapshot? history, out StatusResponseFailure failure)
     {
@@ -384,6 +429,8 @@ public static class StatusProtocol
         return entries.ValueKind == JsonValueKind.Array && entries.EnumerateArray().All(entry =>
             HasFields(entry, "Category", "Kind", "PreviousState", "CurrentState", "ObservedAtUtc"));
     }
+
+    private static bool IsUpperHash(string? value) => value is { Length: 64 } && value.All(c => c is >= '0' and <= '9' or >= 'A' and <= 'F');
 
     private static bool HasFields(JsonElement element, params string[] fields)
     {

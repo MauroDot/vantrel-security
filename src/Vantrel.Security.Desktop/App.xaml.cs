@@ -34,6 +34,8 @@ public partial class App : Application
                 (IIntegrityRefreshAuditClient)services.GetRequiredService<ISecurityServiceStatusClient>());
             builder.Services.AddSingleton<ITrustedManifestIntegrityHistoryClient>(services =>
                 (ITrustedManifestIntegrityHistoryClient)services.GetRequiredService<ISecurityServiceStatusClient>());
+            builder.Services.AddSingleton<IReleaseProvenanceClient>(services =>
+                (IReleaseProvenanceClient)services.GetRequiredService<ISecurityServiceStatusClient>());
             builder.Services.AddSingleton<ITrustedManifestRefreshCommandClient, NamedPipeCommandClient>();
             builder.Services.AddSingleton<MainWindow>();
             _host = builder.Build();

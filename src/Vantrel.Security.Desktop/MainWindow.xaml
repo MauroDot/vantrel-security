@@ -131,6 +131,13 @@
                         <TextBlock Text="This authenticates a fixed signed manifest and compares seven fixed installed Vantrel service files. It is not a malware, safety, or system-wide trust verdict."
                                    Foreground="#A8B9C9" TextWrapping="Wrap"/>
                         <Separator Margin="0,20,0,16"/>
+                        <TextBlock Text="SIGNED RELEASE PROVENANCE" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="ReleaseProvenanceStateText" Text="Loading - checking service" FontSize="18" FontWeight="SemiBold" Margin="0,10,0,8" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="ReleaseProvenanceSampleText" Text="Sample: unavailable" Margin="0,0,0,8"/>
+                        <TextBlock x:Name="ReleaseProvenanceValueText" Text="Release metadata: unavailable" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                        <TextBlock Text="This verifies fixed signed release metadata bound to the current signed manifest and applies a local anti-rollback policy. It does not install, update, repair, or establish system-wide trust."
+                                   Foreground="#A8B9C9" TextWrapping="Wrap"/>
+                        <Separator Margin="0,20,0,16"/>
                         <TextBlock Text="INTEGRITY REFRESH ACTIVITY" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
                         <TextBlock x:Name="IntegrityRefreshAuditStateText" Text="Loading - checking service" FontSize="18" FontWeight="SemiBold" Margin="0,10,0,8" TextWrapping="Wrap"/>
                         <TextBlock x:Name="IntegrityRefreshAuditSessionText" Text="Current service session only" Margin="0,0,0,8"/>

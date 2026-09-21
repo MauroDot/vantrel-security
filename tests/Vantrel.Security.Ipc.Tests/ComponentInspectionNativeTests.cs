@@ -10,6 +10,16 @@ namespace Vantrel.Security.Ipc.Tests;
 public sealed class ComponentInspectionNativeTests
 {
     [TestMethod]
+    public void Production_release_metadata_verifier_is_a_separate_valid_p256_public_key()
+    {
+        using var key = System.Security.Cryptography.ECDsa.Create();
+        key.ImportSubjectPublicKeyInfo(ReleaseMetadataPublicKey.SubjectPublicKeyInfo, out var read);
+        Assert.AreEqual(ReleaseMetadataPublicKey.SubjectPublicKeyInfo.Length, read);
+        Assert.AreEqual(256, key.KeySize);
+        CollectionAssert.AreNotEqual(TrustedManifestPublicKey.SubjectPublicKeyInfo, ReleaseMetadataPublicKey.SubjectPublicKeyInfo);
+    }
+
+    [TestMethod]
     public void Production_trusted_manifest_verifier_is_one_valid_p256_public_key()
     {
         using var key = System.Security.Cryptography.ECDsa.Create();
@@ -89,7 +99,10 @@ public sealed class ComponentInspectionNativeTests
         services.AddSingleton<ComponentIntegritySource>();
         services.AddSingleton<TrustedManifestIntegrityStore>();
         services.AddSingleton<TrustedManifestIntegrityHistoryStore>();
+        services.AddSingleton<ReleasePolicyStore>();
+        services.AddSingleton<ReleaseProvenanceStore>();
         services.AddSingleton<TrustedManifestIntegritySource>();
+        services.AddSingleton<ReleaseProvenanceSource>();
         services.AddSingleton<CommandAuditStore>();
         services.AddSingleton<CommandRequestRegistry>();
         services.AddSingleton<CommandRejectionLogLimiter>();
@@ -97,6 +110,7 @@ public sealed class ComponentInspectionNativeTests
         services.AddHostedService<ComponentInspectionWorker>();
         services.AddHostedService<ComponentIntegrityWorker>();
         services.AddHostedService<TrustedManifestIntegrityWorker>();
+        services.AddHostedService<ReleaseProvenanceWorker>();
         services.AddHostedService<StatusPipeWorker>();
         services.AddHostedService<CommandPipeWorker>();
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
@@ -106,7 +120,11 @@ public sealed class ComponentInspectionNativeTests
         Assert.IsTrue(provider.GetServices<IHostedService>().Any(worker => worker is ComponentIntegrityWorker));
         Assert.IsNotNull(provider.GetRequiredService<TrustedManifestIntegritySource>());
         Assert.IsNotNull(provider.GetRequiredService<TrustedManifestIntegrityHistoryStore>());
+        Assert.IsNotNull(provider.GetRequiredService<ReleasePolicyStore>());
+        Assert.IsNotNull(provider.GetRequiredService<ReleaseProvenanceStore>());
+        Assert.IsNotNull(provider.GetRequiredService<ReleaseProvenanceSource>());
         Assert.IsTrue(provider.GetServices<IHostedService>().Any(worker => worker is TrustedManifestIntegrityWorker));
+        Assert.IsTrue(provider.GetServices<IHostedService>().Any(worker => worker is ReleaseProvenanceWorker));
         Assert.IsNotNull(provider.GetRequiredService<TrustedManifestRefreshCoordinator>());
         Assert.IsNotNull(provider.GetRequiredService<CommandAuditStore>());
         Assert.IsNotNull(provider.GetRequiredService<CommandRequestRegistry>());
@@ -117,7 +135,7 @@ public sealed class ComponentInspectionNativeTests
     }
 
     [TestMethod]
-    public async Task All_nine_fixed_queries_share_the_single_pipe()
+    public async Task All_ten_fixed_queries_share_the_single_pipe()
     {
         var pipe = $"Vantrel.Security.Test.{Guid.NewGuid():N}"; var status = new ServiceStatusStore();
         var health = new SystemHealthStore(); var activity = new ActivityStore(status); var scan = new ScanCapabilityStore(); var inspection = new ComponentInspectionStore();
@@ -127,12 +145,21 @@ public sealed class ComponentInspectionNativeTests
         var manifest = new TrustedManifestIntegrityStore(); manifest.Update(new TrustedManifestIntegritySnapshot(DateTimeOffset.UtcNow, StatusProtocol.TrustedManifestIntegrityPolicyRevision, TrustedManifestSignatureState.Valid, TrustedManifestInstallationEvaluation.AllMatch, null, null));
         var audit = new CommandAuditStore(); audit.Add("0123456789abcdef0123456789abcdef", CommandCallerClassification.InteractiveUser, CommandAuditOutcome.Completed);
         var history = new TrustedManifestIntegrityHistoryStore(); history.AppendPublished(manifest.Snapshot()!);
-        using var worker = new StatusPipeWorker(status, health, activity, scan, inspection, integrity, manifest, history, audit, Microsoft.Extensions.Logging.Abstractions.NullLogger<StatusPipeWorker>.Instance, pipe);
+        var provenance = new ReleaseProvenanceStore(); provenance.Update(new ReleaseProvenanceSnapshot(DateTimeOffset.UtcNow, ReleaseMetadataSignatureState.Valid, ReleaseManifestBindingState.Bound, ReleaseMetadataCodec.Product, ReleaseMetadataCodec.Architecture, ReleaseMetadataCodec.Channel, 1, "0.1.0", ReleasePolicyDecision.SameAcceptedRelease, new string('B', 64)));
+        using var worker = new StatusPipeWorker(status, health, activity, scan, inspection, integrity, manifest, history, audit, provenance, Microsoft.Extensions.Logging.Abstractions.NullLogger<StatusPipeWorker>.Instance, pipe);
         await worker.StartAsync(CancellationToken.None);
         try
         {
             var client = new Vantrel.Security.Infrastructure.NamedPipeStatusClient(pipe, TimeSpan.FromSeconds(2), true);
-            Assert.IsNotNull(await client.GetStatusAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetSystemHealthAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetActivityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetScanCapabilityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetComponentInspectionAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetComponentIntegrityAsync(CancellationToken.None)); Assert.IsNotNull(await client.GetTrustedManifestIntegrityAsync(CancellationToken.None));
+            Assert.IsNotNull(await client.GetStatusAsync(CancellationToken.None));
+            Assert.IsNotNull(await client.GetSystemHealthAsync(CancellationToken.None));
+            Assert.IsNotNull(await client.GetActivityAsync(CancellationToken.None));
+            Assert.IsNotNull(await client.GetScanCapabilityAsync(CancellationToken.None));
+            Assert.IsNotNull(await client.GetComponentInspectionAsync(CancellationToken.None));
+            Assert.IsNotNull(await client.GetComponentIntegrityAsync(CancellationToken.None));
+            Assert.IsNotNull(await client.GetTrustedManifestIntegrityAsync(CancellationToken.None));
+            var release = await client.GetReleaseProvenanceAsync(CancellationToken.None);
+            Assert.IsNotNull(release, client.LastDiagnostic?.ToString());
         var publicAudit = await client.GetIntegrityRefreshAuditAsync(CancellationToken.None);
         Assert.IsNotNull(publicAudit); Assert.AreEqual(1, publicAudit.Entries.Length); Assert.AreEqual(IntegrityRefreshAuditOutcome.Completed, publicAudit.Entries[0].Outcome);
             var historyBefore = history.Snapshot(); var auditBefore = audit.Snapshot();

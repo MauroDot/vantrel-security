@@ -27,6 +27,8 @@ public sealed class TrustedManifestIntegrityHistoryStore
 }
 
 /// <summary>Authenticates a fixed signed manifest, then compares exactly seven fixed installed files.</summary>
+internal sealed record TrustedManifestCollectionResult(TrustedManifestIntegritySnapshot Snapshot, string? ManifestSha256);
+
 public sealed class TrustedManifestIntegritySource
 {
     private readonly IComponentInspectionHandleOperations _operations;
@@ -39,7 +41,10 @@ public sealed class TrustedManifestIntegritySource
         Func<ComponentInspectionTargetIdentity> deriveManifest, Func<CancellationToken, CancellationTokenSource>? deadlineSource = null)
     { _operations = operations; _isEligible = isEligible; _deriveManifest = deriveManifest; _deadlineSource = deadlineSource ?? DeadlineSource; }
 
-    public async Task<TrustedManifestIntegritySnapshot> CollectAsync(CancellationToken cancellationToken)
+    public async Task<TrustedManifestIntegritySnapshot> CollectAsync(CancellationToken cancellationToken) =>
+        (await CollectWithEvidenceAsync(cancellationToken)).Snapshot;
+
+    internal async Task<TrustedManifestCollectionResult> CollectWithEvidenceAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var sampled = DateTimeOffset.UtcNow;
@@ -61,6 +66,7 @@ public sealed class TrustedManifestIntegritySource
                     _ => Result(sampled, TrustedManifestSignatureState.ManifestMalformed, TrustedManifestInstallationEvaluation.ManifestInvalid)
                 };
             var authenticatedManifest = manifest!;
+            var manifestSha256 = Convert.ToHexString(SHA256.HashData(manifestBytes));
             if (!TrustedManifestCodec.Verify(authenticatedManifest, TrustedManifestPublicKey.SubjectPublicKeyInfo))
                 return Result(sampled, TrustedManifestSignatureState.SignatureInvalid, TrustedManifestInstallationEvaluation.ManifestInvalid);
             foreach (var (component, name) in Components)
@@ -71,7 +77,7 @@ public sealed class TrustedManifestIntegritySource
                 if (!string.Equals(observed.Hash, authenticatedManifest.Hashes[component], StringComparison.Ordinal))
                     return Result(sampled, TrustedManifestSignatureState.Valid, TrustedManifestInstallationEvaluation.ComponentMismatch, null, component);
             }
-            return Result(sampled, TrustedManifestSignatureState.Valid, TrustedManifestInstallationEvaluation.AllMatch);
+            return Result(sampled, TrustedManifestSignatureState.Valid, TrustedManifestInstallationEvaluation.AllMatch, manifestSha256: manifestSha256);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (OperationCanceledException) { return Result(sampled, TrustedManifestSignatureState.ManifestUnavailable, TrustedManifestInstallationEvaluation.ObservationUnavailable, ComponentInspectionReason.TimedOut); }
@@ -81,6 +87,18 @@ public sealed class TrustedManifestIntegritySource
         catch (IOException) { return Result(sampled, TrustedManifestSignatureState.ManifestUnavailable, TrustedManifestInstallationEvaluation.ManifestUnavailable, ComponentInspectionReason.IoFailure); }
     }
 
+    internal async Task<byte[]?> ReadManifestForReleaseProvenanceAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!_isEligible()) return null;
+        var target = _deriveManifest();
+        var root = Path.GetFullPath(target.InstallRoot);
+        var path = Path.GetFullPath(target.LoadedAssemblyPath);
+        if (!ComponentInspectionSource.Contained(root, path) || !string.Equals(Path.GetFileName(path), "Vantrel.Security.TrustedManifest", StringComparison.Ordinal))
+            throw new IOException("Fixed trusted manifest identity rejected.");
+        using var timeout = _deadlineSource(cancellationToken);
+        return await ReadBoundedAsync(path, root, TrustedManifestCodec.MaximumBytes, timeout.Token);
+    }
     private async Task<byte[]> ReadBoundedAsync(string path, string root, int maximum, CancellationToken token)
     {
         using var handle = _operations.Open(path);
@@ -126,9 +144,9 @@ public sealed class TrustedManifestIntegritySource
         if (!ComponentInspectionSource.Contained(root, finalPath)) throw new IOException("Final path outside installation root.");
     }
 
-    private static TrustedManifestIntegritySnapshot Result(DateTimeOffset sampled, TrustedManifestSignatureState signature,
-        TrustedManifestInstallationEvaluation evaluation, ComponentInspectionReason? reason = null, TrustedManifestComponent? mismatch = null) =>
-        new(sampled, StatusProtocol.TrustedManifestIntegrityPolicyRevision, signature, evaluation, reason, mismatch);
+    private static TrustedManifestCollectionResult Result(DateTimeOffset sampled, TrustedManifestSignatureState signature,
+        TrustedManifestInstallationEvaluation evaluation, ComponentInspectionReason? reason = null, TrustedManifestComponent? mismatch = null, string? manifestSha256 = null) =>
+        new(new(sampled, StatusProtocol.TrustedManifestIntegrityPolicyRevision, signature, evaluation, reason, mismatch), manifestSha256);
 
     private static readonly (TrustedManifestComponent Component, string FileName)[] Components =
     [
@@ -143,6 +161,12 @@ public sealed class TrustedManifestIntegritySource
     private static bool IsInstalledScmService() => OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService();
     private static CancellationTokenSource DeadlineSource(CancellationToken token) { var source = CancellationTokenSource.CreateLinkedTokenSource(token); source.CancelAfter(ComponentInspectionSource.Deadline); return source; }
     private static ComponentInspectionTargetIdentity DeriveManifest() => new(Path.Combine(Path.GetDirectoryName(typeof(TrustedManifestIntegritySource).Assembly.Location)!, "Vantrel.Security.TrustedManifest"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Vantrel Security", "Service"));
+}
+
+internal static class ReleaseMetadataPublicKey
+{
+    // SubjectPublicKeyInfo DER for the fixed, separate production release-metadata NIST P-256 verifier. No private key is present.
+    internal static readonly byte[] SubjectPublicKeyInfo = Convert.FromBase64String("MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAErjlbxAQm0yHNOBzbAQ2JMsT3R+fEbwEi+D8BM90klSrAfqhSf4SkJ5b8Y9oFbiItIeoDlRSZsAHD/EchoRgkLw==");
 }
 
 internal static class TrustedManifestPublicKey
