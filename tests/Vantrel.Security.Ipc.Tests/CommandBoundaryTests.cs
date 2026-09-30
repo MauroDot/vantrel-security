@@ -148,6 +148,23 @@ public sealed class CommandBoundaryTests
     }
 
     [TestMethod]
+    public void Trusted_manifest_history_orders_an_late_older_publication_by_sample_time()
+    {
+        var history = new TrustedManifestIntegrityHistoryStore();
+        var newer = DateTimeOffset.UtcNow;
+        var older = newer.AddMinutes(-1);
+        history.AppendPublished(new TrustedManifestIntegritySnapshot(newer, StatusProtocol.TrustedManifestIntegrityPolicyRevision,
+            TrustedManifestSignatureState.Valid, TrustedManifestInstallationEvaluation.AllMatch, null, null));
+        history.AppendPublished(new TrustedManifestIntegritySnapshot(older, StatusProtocol.TrustedManifestIntegrityPolicyRevision,
+            TrustedManifestSignatureState.Valid, TrustedManifestInstallationEvaluation.AllMatch, null, null));
+
+        var entries = history.Snapshot();
+        Assert.AreEqual(2, entries.Length);
+        Assert.AreEqual(newer, entries[0].SampledAtUtc);
+        Assert.AreEqual(older, entries[1].SampledAtUtc);
+    }
+
+    [TestMethod]
     public async Task Coordinator_publishes_current_snapshot_before_appending_history_and_preserves_history_on_failure()
     {
         var current = new TrustedManifestIntegrityStore(); var history = new TrustedManifestIntegrityHistoryStore(); var sample = Sample();

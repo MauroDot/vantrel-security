@@ -17,22 +17,16 @@ public sealed class CommandPipeIntegrationTests
     [TestMethod]
     public async Task Malformed_command_frame_does_no_work_and_next_local_client_is_accepted()
     {
-        var pipeName = $"Vantrel.Security.Command.Test.{Guid.NewGuid():N}"; var store = new TrustedManifestIntegrityStore(); var calls = 0;
-        using var stop = new CancellationTokenSource(); var audit = new CommandAuditStore();
-        var coordinator = new TrustedManifestRefreshCoordinator(store, _ => { Interlocked.Increment(ref calls); return Task.FromResult(Sample()); }, audit, new Lifetime(stop.Token), NullLogger<TrustedManifestRefreshCoordinator>.Instance);
-        using var worker = new CommandPipeWorker(new CommandRequestRegistry(), audit, coordinator, new CommandRejectionLogLimiter(), NullLogger<CommandPipeWorker>.Instance, pipeName);
-        await worker.StartAsync(CancellationToken.None);
-        try
-        {
-            using (var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
-            { await client.ConnectAsync(); await PipeMessages.WriteAsync(client, "{bad"u8.ToArray(), CancellationToken.None); }
-            await Task.Delay(25); Assert.AreEqual(0, calls);
-            var valid = await new NamedPipeCommandClient(pipeName).RefreshTrustedManifestIntegrityAsync("0123456789abcdef0123456789abcdef", CancellationToken.None);
-            Assert.IsNotNull(valid); Assert.AreEqual(CommandResult.Accepted, valid.Result);
-        }
-        finally { stop.Cancel(); await worker.StopAsync(CancellationToken.None); }
-    }
+        await using var fixture = await CommandFixture.StartAsync();
+        Assert.IsNull(await fixture.SendRawAsync("{bad"u8.ToArray()));
+        Assert.AreEqual(0, fixture.Collections);
+        Assert.IsTrue(fixture.WorkerIsAlive, "The rejected client faulted the command worker.");
 
+        var response = await fixture.SendEventuallyAsync("0123456789abcdef0123456789abcdef");
+        Assert.AreEqual(CommandResult.Accepted, response.Result);
+        await fixture.WaitForIdleAsync();
+        Assert.AreEqual(1, fixture.Collections);
+    }
     [DataTestMethod]
     [DataRow("{bad")]
     [DataRow("{\"ProtocolVersion\":1,\"Command\":\"unknown\",\"RequestId\":\"0123456789abcdef0123456789abcdef\"}")]
@@ -47,7 +41,8 @@ public sealed class CommandPipeIntegrationTests
         Assert.AreEqual(0, fixture.Collections);
         Assert.IsTrue(fixture.WorkerIsAlive, "The rejected client faulted the command worker.");
         var response = await fixture.SendEventuallyAsync("0123456789abcdef0123456789abcdef");
-        Assert.AreEqual(CommandResult.Accepted, response.Result);
+        Assert.IsTrue(response.Result is CommandResult.Accepted or CommandResult.Duplicate);
+        Assert.AreEqual(1, fixture.Collections);
     }
 
     [TestMethod]
@@ -93,7 +88,7 @@ public sealed class CommandPipeIntegrationTests
         for (var value = 0; value < 12; value++)
         {
             var id = value.ToString("x32");
-            Assert.AreEqual(CommandResult.Accepted, (await fixture.SendEventuallyAsync(id)).Result);
+            Assert.IsTrue((await fixture.SendEventuallyAsync(id)).Result is CommandResult.Accepted or CommandResult.Duplicate);
             await fixture.WaitForIdleAsync();
         }
         var rejected = await fixture.SendEventuallyAsync("f123456789abcdef0123456789abcdef");

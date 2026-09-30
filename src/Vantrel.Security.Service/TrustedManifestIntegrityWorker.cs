@@ -22,7 +22,11 @@ public sealed class TrustedManifestIntegrityHistoryStore
     public void AppendPublished(TrustedManifestIntegritySnapshot snapshot)
     {
         var entry = new TrustedManifestIntegrityHistoryRecord(snapshot.SampledAtUtc, snapshot.SignatureState, snapshot.Evaluation);
-        lock (this) _entries = _entries.Insert(0, entry).Take(MaximumEntries).ToImmutableArray();
+        lock (this) _entries = _entries
+            .Append(entry)
+            .OrderByDescending(static snapshot => snapshot.SampledAtUtc)
+            .Take(MaximumEntries)
+            .ToImmutableArray();
     }
 }
 
