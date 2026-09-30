@@ -16,4 +16,13 @@ public sealed partial class ReleasePolicyStoreTests
         foreach (var sid in new[] { WellKnownSidType.LocalSystemSid, WellKnownSidType.BuiltinAdministratorsSid })
             Assert.IsTrue(rules.Any(rule => rule.IdentityReference.Value == new SecurityIdentifier(sid, null).Value && rule.AccessControlType == AccessControlType.Allow && (rule.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl));
     }
+
+    [TestMethod]
+    public void Runtime_policy_file_DACL_matches_the_LocalService_replaced_mutable_file_contract()
+    {
+        var descriptor = ReleasePolicyStore.CreateRequiredFileSecurity();
+        descriptor.SetOwner(new SecurityIdentifier(WellKnownSidType.LocalServiceSid, null));
+        Assert.IsTrue(UpdateFilesystemSecurity.ValidateLocalServiceReplacedMutableFileDescriptor(descriptor).IsMatch);
+        Assert.IsFalse(UpdateFilesystemSecurity.ValidateProvisionedMutableFileDescriptor(descriptor).IsMatch);
+    }
 }

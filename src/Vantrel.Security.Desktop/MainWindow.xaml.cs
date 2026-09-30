@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private readonly IIntegrityRefreshAuditClient _integrityRefreshAuditClient;
     private readonly ITrustedManifestIntegrityHistoryClient _trustedManifestIntegrityHistoryClient;
     private readonly IReleaseProvenanceClient _releaseProvenanceClient;
+    private readonly IUpdateTransactionClient _updateTransactionClient;
     private readonly ITrustedManifestRefreshCommandClient _trustedManifestRefreshCommandClient;
     private readonly ILogger<MainWindow> _logger;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(10) };
@@ -31,6 +32,7 @@ public partial class MainWindow : Window
     private bool _integrityRefreshAuditWasDisconnected;
     private bool _trustedManifestHistoryWasDisconnected;
     private bool _releaseProvenanceWasDisconnected;
+    private bool _updateTransactionWasDisconnected;
     private DateTimeOffset? _trustedManifestHistoryServiceStartedAtUtc;
     private bool _statusConnected;
     private TrustedManifestIntegritySnapshot? _lastTrustedManifestSnapshot;
@@ -39,7 +41,7 @@ public partial class MainWindow : Window
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
         IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient, ITrustedManifestIntegrityClient trustedManifestIntegrityClient, IIntegrityRefreshAuditClient integrityRefreshAuditClient, ITrustedManifestIntegrityHistoryClient trustedManifestIntegrityHistoryClient, IReleaseProvenanceClient releaseProvenanceClient, ITrustedManifestRefreshCommandClient trustedManifestRefreshCommandClient,
-        ILogger<MainWindow> logger)
+        IUpdateTransactionClient updateTransactionClient, ILogger<MainWindow> logger)
     {
         _client = client;
         _healthClient = healthClient;
@@ -51,6 +53,7 @@ public partial class MainWindow : Window
         _integrityRefreshAuditClient = integrityRefreshAuditClient;
         _trustedManifestIntegrityHistoryClient = trustedManifestIntegrityHistoryClient;
         _releaseProvenanceClient = releaseProvenanceClient;
+        _updateTransactionClient = updateTransactionClient;
         _trustedManifestRefreshCommandClient = trustedManifestRefreshCommandClient;
         _logger = logger;
         InitializeComponent();
@@ -111,6 +114,7 @@ public partial class MainWindow : Window
             if (status is null) _integrityRefreshAuditWasDisconnected = true;
             if (status is null) _trustedManifestHistoryWasDisconnected = true;
             if (status is null) _releaseProvenanceWasDisconnected = true;
+            if (status is null) _updateTransactionWasDisconnected = true;
             if (status is null && _trustedManifestRefresh.IsInFlight)
             {
                 _trustedManifestRefreshCancellation?.Cancel();
@@ -142,6 +146,9 @@ public partial class MainWindow : Window
                 var releaseProvenance = status is null ? null : await _releaseProvenanceClient.GetReleaseProvenanceAsync(cancellation.Token);
                 if (cancellation.IsCancellationRequested) return;
                 RenderReleaseProvenance(releaseProvenance, status is not null);
+                var updateTransaction = status is null ? null : await _updateTransactionClient.GetUpdateStatusAsync(cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                RenderUpdateTransaction(updateTransaction, status is not null);
                 var refreshAudit = status is null ? null : await _integrityRefreshAuditClient.GetIntegrityRefreshAuditAsync(cancellation.Token);
                 if (cancellation.IsCancellationRequested) return;
                 RenderIntegrityRefreshAudit(refreshAudit, status is not null);
@@ -223,6 +230,15 @@ public partial class MainWindow : Window
             _releaseProvenanceWasDisconnected = true;
         else if (presentation.DisplayState is ReleaseProvenanceDisplayState.Current or ReleaseProvenanceDisplayState.Recovered)
             _releaseProvenanceWasDisconnected = false;
+    }
+    private void RenderUpdateTransaction(UpdateTransactionSnapshot? transaction, bool connected)
+    {
+        var presentation = UpdateTransactionDesktopPresentation.Create(transaction, connected, DateTimeOffset.UtcNow, _updateTransactionWasDisconnected);
+        UpdateTransactionStateText.Text = presentation.StateText;
+        UpdateTransactionSampleText.Text = presentation.SampleText;
+        UpdateTransactionValueText.Text = presentation.ValueText;
+        if (presentation.State == UpdateTransactionDisplayState.Disconnected) _updateTransactionWasDisconnected = true;
+        else if (presentation.State is UpdateTransactionDisplayState.Current or UpdateTransactionDisplayState.Recovered) _updateTransactionWasDisconnected = false;
     }
     private void RenderIntegrityRefreshAudit(IntegrityRefreshAuditSnapshot? audit, bool connected)
     {

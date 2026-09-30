@@ -36,6 +36,8 @@ public partial class App : Application
                 (ITrustedManifestIntegrityHistoryClient)services.GetRequiredService<ISecurityServiceStatusClient>());
             builder.Services.AddSingleton<IReleaseProvenanceClient>(services =>
                 (IReleaseProvenanceClient)services.GetRequiredService<ISecurityServiceStatusClient>());
+            builder.Services.AddSingleton<IUpdateTransactionClient>(services =>
+                (IUpdateTransactionClient)services.GetRequiredService<ISecurityServiceStatusClient>());
             builder.Services.AddSingleton<ITrustedManifestRefreshCommandClient, NamedPipeCommandClient>();
             builder.Services.AddSingleton<MainWindow>();
             _host = builder.Build();
@@ -46,7 +48,7 @@ public partial class App : Application
         }
         catch (Exception error)
         {
-            MessageBox.Show($"Vantrel Security could not start: {error.Message}", "Startup error",
+            MessageBox.Show($"Kestermere Security could not start: {error.Message}", "Startup error",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }

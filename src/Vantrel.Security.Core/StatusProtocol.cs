@@ -20,7 +20,8 @@ public enum StatusResponseFailure
     InvalidTrustedManifestIntegrity,
     InvalidIntegrityRefreshAudit,
     InvalidTrustedManifestIntegrityHistory,
-    InvalidReleaseProvenance
+    InvalidReleaseProvenance,
+    InvalidUpdateTransaction
 }
 
 public static class StatusProtocol
@@ -41,8 +42,9 @@ public static class StatusProtocol
     private sealed record IntegrityRefreshAuditResponse(int ProtocolVersion, string Type, IntegrityRefreshAuditSnapshot Audit);
     private sealed record TrustedManifestIntegrityHistoryResponse(int ProtocolVersion, string Type, TrustedManifestIntegrityHistorySnapshot History);
     private sealed record ReleaseProvenanceResponse(int ProtocolVersion, string Type, ReleaseProvenanceSnapshot Provenance);
+    private sealed record UpdateTransactionResponse(int ProtocolVersion, string Type, UpdateTransactionSnapshot Transaction);
 
-    public enum RequestKind { Invalid, Status, SystemHealth, Activity, ScanCapability, ComponentInspection, ComponentIntegrity, TrustedManifestIntegrity, IntegrityRefreshAudit, TrustedManifestIntegrityHistory, ReleaseMetadata }
+    public enum RequestKind { Invalid, Status, SystemHealth, Activity, ScanCapability, ComponentInspection, ComponentIntegrity, TrustedManifestIntegrity, IntegrityRefreshAudit, TrustedManifestIntegrityHistory, ReleaseMetadata, UpdateStatus }
 
     public static byte[] CreateRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_status"));
 
@@ -60,6 +62,7 @@ public static class StatusProtocol
     public static byte[] CreateIntegrityRefreshAuditRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_integrity_refresh_audit"));
     public static byte[] CreateTrustedManifestIntegrityHistoryRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_trusted_manifest_integrity_history"));
     public static byte[] CreateReleaseMetadataRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_release_metadata"));
+    public static byte[] CreateUpdateStatusRequest() => JsonSerializer.SerializeToUtf8Bytes(new Request(Version, "get_update_status"));
 
     public static bool IsValidRequest(ReadOnlySpan<byte> utf8) => ReadRequestKind(utf8) == RequestKind.Status;
 
@@ -82,6 +85,7 @@ public static class StatusProtocol
                 "get_integrity_refresh_audit" when HasOnlyFixedRequestFields(utf8) => RequestKind.IntegrityRefreshAudit,
                 "get_trusted_manifest_integrity_history" when HasOnlyFixedRequestFields(utf8) => RequestKind.TrustedManifestIntegrityHistory,
                 "get_release_metadata" when HasOnlyFixedRequestFields(utf8) => RequestKind.ReleaseMetadata,
+                "get_update_status" when HasOnlyFixedRequestFields(utf8) => RequestKind.UpdateStatus,
                 _ => RequestKind.Invalid
             };
         }
@@ -124,6 +128,40 @@ public static class StatusProtocol
 
     public static byte[] CreateReleaseMetadataResponse(ReleaseProvenanceSnapshot provenance) =>
         JsonSerializer.SerializeToUtf8Bytes(new ReleaseProvenanceResponse(Version, "release_metadata", provenance));
+
+    public static byte[] CreateUpdateStatusResponse(UpdateTransactionSnapshot transaction) =>
+        JsonSerializer.SerializeToUtf8Bytes(new UpdateTransactionResponse(Version, "update_status", transaction));
+
+    public static bool TryReadUpdateStatusResponse(ReadOnlySpan<byte> utf8, out UpdateTransactionSnapshot? transaction,
+        out StatusResponseFailure failure)
+    {
+        transaction = null;
+        failure = utf8.Length switch { 0 => StatusResponseFailure.Empty, > MaximumMessageBytes => StatusResponseFailure.Oversized, _ => StatusResponseFailure.None };
+        if (failure != StatusResponseFailure.None) return false;
+        try
+        {
+            var response = JsonSerializer.Deserialize<UpdateTransactionResponse>(utf8);
+            var value = response?.Transaction;
+            if (response is null || value is null) { failure = StatusResponseFailure.MalformedJson; return false; }
+            if (response.ProtocolVersion != Version) { failure = StatusResponseFailure.UnsupportedVersion; return false; }
+            if (response.Type != "update_status") { failure = StatusResponseFailure.UnexpectedType; return false; }
+            if (!HasExactUpdateStatusShape(utf8) || value.SampledAtUtc == default || value.SampledAtUtc.Offset != TimeSpan.Zero ||
+                value.SampledAtUtc > DateTimeOffset.UtcNow.AddMinutes(1) || !Enum.IsDefined(value.Phase) ||
+                !Enum.IsDefined(value.LastResult) || value.CurrentReleaseSequence is 0 || value.TargetReleaseSequence is 0 ||
+                (value.Phase == UpdateTransactionPhase.Idle && (value.VerifiedStagedCandidatePresent || value.TargetReleaseSequence is not null)))
+            { failure = StatusResponseFailure.InvalidUpdateTransaction; return false; }
+            transaction = value;
+            return true;
+        }
+        catch (JsonException) { failure = StatusResponseFailure.MalformedJson; return false; }
+    }
+
+    private static bool HasExactUpdateStatusShape(ReadOnlySpan<byte> utf8)
+    {
+        using var document = JsonDocument.Parse(utf8.ToArray()); var root = document.RootElement;
+        return HasFields(root, "ProtocolVersion", "Type", "Transaction") && HasFields(root.GetProperty("Transaction"),
+            "SampledAtUtc", "Phase", "VerifiedStagedCandidatePresent", "CurrentReleaseSequence", "TargetReleaseSequence", "LastResult");
+    }
 
     public static bool TryReadReleaseMetadataResponse(ReadOnlySpan<byte> utf8, out ReleaseProvenanceSnapshot? provenance,
         out StatusResponseFailure failure)

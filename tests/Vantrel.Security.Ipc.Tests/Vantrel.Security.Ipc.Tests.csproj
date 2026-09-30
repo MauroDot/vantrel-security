@@ -20,6 +20,14 @@
     <ProjectReference Include="..\..\src\Vantrel.Security.Core\Vantrel.Security.Core.csproj" />
     <ProjectReference Include="..\..\src\Vantrel.Security.Infrastructure\Vantrel.Security.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Vantrel.Security.Service\Vantrel.Security.Service.csproj" />
+    <ProjectReference Include="..\..\tools\Vantrel.Security.OfflineUpdateTool\Vantrel.Security.OfflineUpdateTool.csproj" />
+    <ProjectReference Include="..\Vantrel.Security.LocalServiceAclHarness\Vantrel.Security.LocalServiceAclHarness.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Vantrel.Security.LocalServiceAclHarness\HarnessProtocol.cs"
+             Link="LocalServiceAclHarness\HarnessProtocol.cs" />
   </ItemGroup>
 
 </Project>

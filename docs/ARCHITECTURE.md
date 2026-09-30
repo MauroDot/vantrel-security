@@ -1,6 +1,6 @@
 # Architecture
 
-Vantrel Security is pre-release development software and must not be relied upon as the sole antivirus or endpoint protection solution.
+Kestermere Security is pre-release development software and must not be relied upon as the sole antivirus or endpoint protection solution.
 
 ```text
 Non-elevated WPF desktop
@@ -39,7 +39,7 @@ The installed service records the first accepted connection and completed respon
 
 The pipe name is not a secret. A local interactive user may request status or cause a short delay on the single pipe instance. Future privileged operations require separate protocol design and authorization review. Details and known limits are in [SECURITY.md](SECURITY.md).
 
-The installed Task 004, 005, and 006 builds passed LocalService validation on 2026-09-18. The matching non-elevated Task 006 desktop displayed real System Health values and Windows-reported antivirus and firewall health as Good while Vantrel Protection Status remained Unavailable. It changed to Disconnected when the service stopped and received a newer sample in the same desktop process after restart.
+The installed Task 004, 005, and 006 builds passed LocalService validation on 2026-09-18. The matching non-elevated Task 006 desktop displayed real System Health values and Windows-reported antivirus and firewall health as Good while Kestermere Protection Status remained Unavailable. It changed to Disconnected when the service stopped and received a newer sample in the same desktop process after restart.
 
 Task 007 installed LocalService validation passed on 2026-09-18. The matching non-elevated desktop showed initial Good observations for both Windows-reported categories. When the service stopped, Activity showed Disconnected and cleared the entries. After restart, the same desktop reconnected to a new service session with newer service-start and sampling-through times and only fresh initial observations; the previous in-memory history did not return.
 
@@ -77,3 +77,11 @@ Task 014 adds `get_trusted_manifest_integrity_history` as the ninth fixed Status
 Task 015 adds the tenth fixed Status.v1 request, `get_release_metadata`. The request is parameter-free, read-only, snapshot-only, and cannot start collection, bootstrap or write policy, advance a sequence, sign metadata, invoke Command.v1, mutate integrity state, or write Event Log data. Its worker samples at startup and every 15 minutes outside the pipe loop. Its fixed chain is: SCM eligibility -> fixed `Vantrel.Security.ReleaseMetadata` handle -> strict canonical LF/UTF-8-no-BOM parse -> fixed release-metadata P-256 DER signature verification -> fixed product/architecture/stable-channel/key-ID validation -> SHA-256 binding to the fixed `Vantrel.Security.TrustedManifest` -> trusted-manifest signature verification -> seven fixed component hash verification -> capability creation -> controlled policy bootstrap/evaluation -> immutable Status.v1 snapshot. `VerifiedRelease` has no public constructor and the policy store accepts no raw metadata or caller path.
 
 The policy path is fixed to `C:\ProgramData\Vantrel Security\ReleasePolicy\accepted-release-v1.json`. The LocalService-owned directory and file use protected ACLs, reject reparse points, use a same-directory temporary file, flush before atomic replacement, serialize mutation, and publish immutable snapshots. Sequence 1 may bootstrap only after complete verification; later missing or corrupt state fails closed. Higher-release classification does not update the high water in Task 015: its commit API is reserved and unused until a future verified installer transaction. The desktop shows only bounded status fields through Status.v1. Neither the metadata nor the manifest is an independent root against an Administrator or SYSTEM attacker who can replace the verifier, public key, policy, or service files. Task 015 has no updater, installer, rollback action, policy reset, or Command.v1 extension.
+
+## Task 016: guarded offline transaction
+
+Task 016 is an Administrator-operated offline release transaction, not update discovery or a desktop action. Its roots are code-owned under `C:\ProgramData\Vantrel Security\Updates` for staging, private transaction state, and one immediate-predecessor backup. The transaction operates on exactly the fixed nine-file service release set. It verifies the installed predecessor and staged target before SCM stop, copies and independently verifies the predecessor backup, then performs fixed Program Files replacement. Bounded health verification requires SCM Running, Status.v1 provenance and manifest integrity, and independent installed-chain validation. The service�s LocalService policy worker can commit only a fixed `PostVerified` target journal after re-verifying installed target evidence. Before any restore it rereads policy; target commitment or any unreadable/disagreeing policy prevents rollback.
+
+## Public brand and compatibility identities
+
+The public product is **Kestermere Security** (*Security & System Integrity*), published by **Mauro Interactive**. This is not an internal identity migration. The Vantrel service, assemblies, namespaces, pipe names, signed sidecars, schemas, cryptographic `vantrel-security` identifier, and fixed Program Files and ProgramData locations remain compatibility identifiers for installed signed releases.

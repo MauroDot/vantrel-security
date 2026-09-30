@@ -1,8 +1,8 @@
 # Manual Windows Service validation
 
-Vantrel Security is pre-release development software and must not be relied upon as the sole antivirus or endpoint protection solution.
+Kestermere Security is pre-release development software and must not be relied upon as the sole antivirus or endpoint protection solution.
 
-**Current status (2026-09-19): Tasks 003–011 passed installed-service validation.** Task 011 adds a fixed signed-manifest comparison for seven installed service components. It accepts no scan target or command, and Vantrel Protection Status remains Unavailable. Confirm any other target machine has a current .NET 10 runtime and Windows Desktop Runtime.
+**Current status (2026-09-19): Tasks 003–011 passed installed-service validation.** Task 011 adds a fixed signed-manifest comparison for seven installed service components. It accepts no scan target or command, and Kestermere Protection Status remains Unavailable. Confirm any other target machine has a current .NET 10 runtime and Windows Desktop Runtime.
 
 Use this procedure when unsigned `.ps1` files cannot run under the machine's PowerShell policy. It does not change execution policy. Review the source and publish output first. **Installation, start, stop, restart, and removal require an Administrator PowerShell window.** Querying status and launching the desktop do not.
 
@@ -370,7 +370,7 @@ Get-Service -Name VantrelSecurityService
 Get-WinEvent -FilterHashtable @{ LogName='Application'; ProviderName='VantrelSecurityService' } -MaxEvents 30 | ForEach-Object { "[$($_.TimeCreated)] $($_.Message)" }
 ```
 
-The same desktop process should reconnect and show a newer sample timestamp. Do not stop or reconfigure Windows Security Center to test failure handling. This validation passed on 2026-09-18: the installed LocalService service reported Good before and after the restart, Vantrel Protection Status stayed Unavailable, and the same non-elevated desktop reconnected to a newer sample. Other Windows Security Center states and failure paths were covered by injected automated tests.
+The same desktop process should reconnect and show a newer sample timestamp. Do not stop or reconfigure Windows Security Center to test failure handling. This validation passed on 2026-09-18: the installed LocalService service reported Good before and after the restart, Kestermere Protection Status stayed Unavailable, and the same non-elevated desktop reconnected to a newer sample. Other Windows Security Center states and failure paths were covered by injected automated tests.
 
 ## Task 006 firewall-health update and validation
 
@@ -464,7 +464,7 @@ foreach ($file in $desktopHashes.Keys) {
 & (Join-Path $desktop 'Vantrel.Security.Desktop.exe')
 ```
 
-Confirm Dashboard stays Connected and Vantrel Protection Status is **Unavailable**. On System Health, check a recent sample timestamp, the existing Windows/build, uptime, disk, and antivirus values, and **Windows-reported firewall health**. Record the reported Good, Poor, Snoozed, Not monitored, or Unavailable value. A Good category value does not audit individual firewall profiles or rules. If Unavailable, review fresh safe service diagnostics rather than guessing. Leave the desktop open. In the Administrator window, stop the service and wait for System Health to show **Disconnected**:
+Confirm Dashboard stays Connected and Kestermere Protection Status is **Unavailable**. On System Health, check a recent sample timestamp, the existing Windows/build, uptime, disk, and antivirus values, and **Windows-reported firewall health**. Record the reported Good, Poor, Snoozed, Not monitored, or Unavailable value. A Good category value does not audit individual firewall profiles or rules. If Unavailable, review fresh safe service diagnostics rather than guessing. Leave the desktop open. In the Administrator window, stop the service and wait for System Health to show **Disconnected**:
 
 ```powershell
 Stop-Service -Name VantrelSecurityService
@@ -481,7 +481,7 @@ Get-Service -Name VantrelSecurityService
 Get-WinEvent -FilterHashtable @{ LogName='Application'; ProviderName='VantrelSecurityService' } -MaxEvents 30 | ForEach-Object { "[$($_.TimeCreated)] $($_.Message)" }
 ```
 
-Do not stop, disable, or reconfigure Windows Firewall or Windows Security Center to manufacture test states. Task 006 installed validation passed on 2026-09-18: the LocalService service and non-elevated desktop returned Good for antivirus and firewall health, Vantrel Protection Status stayed Unavailable, and the same desktop reconnected to a newer sample after service restart. Other WSC states and failure paths were verified with injected automated tests.
+Do not stop, disable, or reconfigure Windows Firewall or Windows Security Center to manufacture test states. Task 006 installed validation passed on 2026-09-18: the LocalService service and non-elevated desktop returned Good for antivirus and firewall health, Kestermere Protection Status stayed Unavailable, and the same desktop reconnected to a newer sample after service restart. Other WSC states and failure paths were verified with injected automated tests.
 
 ## Task 007 Activity update and validation
 
@@ -577,7 +577,7 @@ foreach ($file in $desktopHashes.Keys) {
 & (Join-Path $desktop 'Vantrel.Security.Desktop.exe')
 ```
 
-Confirm Dashboard remains **Connected** and Vantrel Protection Status remains **Unavailable**. On Activity, confirm two **Initial observation** entries, one for Windows-reported antivirus health and one for Windows-reported firewall health; either may be Unavailable. Record **Service start** and **Sampled through** values. “Observed at” is when the service sampled, not when Windows changed state. Leave this desktop process open. In the Administrator window, stop the service and wait for Activity to show **Disconnected** with no entries displayed:
+Confirm Dashboard remains **Connected** and Kestermere Protection Status remains **Unavailable**. On Activity, confirm two **Initial observation** entries, one for Windows-reported antivirus health and one for Windows-reported firewall health; either may be Unavailable. Record **Service start** and **Sampled through** values. “Observed at” is when the service sampled, not when Windows changed state. Leave this desktop process open. In the Administrator window, stop the service and wait for Activity to show **Disconnected** with no entries displayed:
 
 ```powershell
 Stop-Service -Name VantrelSecurityService
@@ -693,7 +693,7 @@ foreach ($file in $desktopHashes.Keys) {
 & (Join-Path $desktop 'Vantrel.Security.Desktop.exe')
 ```
 
-Confirm Dashboard remains **Connected** and Vantrel Protection Status remains **Unavailable**. On Scan, confirm a current capability sample and policy revision `scan-capability-v1`. It must state that scanning is not enabled, no file scan is running, client-supplied targets are not accepted, scheduled targets are not configured, and detection, quarantine, remediation, and real-time protection are unavailable. There must be no start button, path control, target picker, schedule, exclusion, or drag-and-drop action. Leave the same desktop process open. In the Administrator window, stop the service and wait for Scan to show **Disconnected**:
+Confirm Dashboard remains **Connected** and Kestermere Protection Status remains **Unavailable**. On Scan, confirm a current capability sample and policy revision `scan-capability-v1`. It must state that scanning is not enabled, no file scan is running, client-supplied targets are not accepted, scheduled targets are not configured, and detection, quarantine, remediation, and real-time protection are unavailable. There must be no start button, path control, target picker, schedule, exclusion, or drag-and-drop action. Leave the same desktop process open. In the Administrator window, stop the service and wait for Scan to show **Disconnected**:
 
 ```powershell
 Stop-Service -Name VantrelSecurityService
@@ -776,3 +776,13 @@ Task 014 adds the ninth fixed, parameter-free Status.v1 request `get_trusted_man
 ## Task 015 signed release provenance and rollback policy
 
 Task 015 adds the tenth fixed Status.v1 request, `get_release_metadata`, and a read-only Scan-page release provenance section. It verifies strict signed release metadata with a separate fixed ECDSA P-256 public key, requires its manifest SHA-256 to bind the existing signed seven-component manifest, and evaluates a fixed LocalService-owned high-water policy at `C:\ProgramData\Vantrel Security\ReleasePolicy\accepted-release-v1.json`. The section displays only bounded signature, binding, product, architecture, channel, sequence, display-version, policy, and sample-time information. It exposes no file or policy path, hash, signature, key material, raw metadata, or error text. Sequence 1 can bootstrap only after complete verification; missing or corrupt policy after bootstrap is unavailable and fail-closed. Higher releases are classification only in Task 015; no installer transaction changes the high-water value. No update, install, rollback, repair, reset, key-management, scanning, or trust verdict exists.
+
+## Task 016 offline update recovery
+
+Task 016 uses a fixed durable journal and one independently verified predecessor backup. Before service stop, validate the installed baseline, staged candidate, and backup release chain. A backup is rollback-authoritative only after its release metadata, manifest binding, signatures, component hashes, sequence, and manifest hash match durable predecessor policy. If an interruption occurs after service stop, treat Program Files as untrusted and recover only from the verified immediate predecessor unless fixed target verification and target policy commitment establish completion. After target policy commitment, automatic downgrade is forbidden. `get_update_status` is read-only and does not authorize update, rollback, retry, or recovery.
+
+Task 016 supplies a one-operation Administrator tool for the fixed staged candidate. It first requires elevation and then resumes the fixed journal or starts a new journal only after verified installed baseline and staged candidate checks. It has no update request in Desktop or Command.v1 and accepts no operator-provided filesystem, service, version, sequence, or rollback target.
+
+## Public brand and compatibility identities
+
+Use **Kestermere Security** and *Security & System Integrity* in user-facing material; Mauro Interactive is the publisher. The documented `VantrelSecurityService`, `Vantrel.Security.*` files/pipes, `vantrel-security` metadata product value, and Vantrel Program Files/ProgramData paths remain required compatibility identifiers. Do not rename them during this public branding phase.

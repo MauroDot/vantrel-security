@@ -10,7 +10,7 @@ namespace Vantrel.Security.Infrastructure;
 
 public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISystemHealthClient, IActivityClient,
     IScanCapabilityClient, IComponentInspectionClient, IComponentIntegrityClient, ITrustedManifestIntegrityClient,
-    IIntegrityRefreshAuditClient, ITrustedManifestIntegrityHistoryClient, IReleaseProvenanceClient, IStatusConnectionDiagnostics
+    IIntegrityRefreshAuditClient, ITrustedManifestIntegrityHistoryClient, IReleaseProvenanceClient, IUpdateTransactionClient, IStatusConnectionDiagnostics
 {
     private readonly string _pipeName;
     private readonly TimeSpan _timeout;
@@ -69,6 +69,8 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISyste
 
     public Task<ReleaseProvenanceSnapshot?> GetReleaseProvenanceAsync(CancellationToken cancellationToken) =>
         QueryAsync(StatusProtocol.CreateReleaseMetadataRequest(), ReadReleaseMetadata, cancellationToken);
+    public Task<UpdateTransactionSnapshot?> GetUpdateStatusAsync(CancellationToken cancellationToken) =>
+        QueryAsync(StatusProtocol.CreateUpdateStatusRequest(), ReadUpdateStatus, cancellationToken);
 
     private static (SecurityServiceStatus?, StatusResponseFailure) ReadStatus(byte[] frame)
     {
@@ -117,6 +119,10 @@ public sealed class NamedPipeStatusClient : ISecurityServiceStatusClient, ISyste
     private static (ReleaseProvenanceSnapshot?, StatusResponseFailure) ReadReleaseMetadata(byte[] frame)
     {
         StatusProtocol.TryReadReleaseMetadataResponse(frame, out var value, out var failure); return (value, failure);
+    }
+    private static (UpdateTransactionSnapshot?, StatusResponseFailure) ReadUpdateStatus(byte[] frame)
+    {
+        StatusProtocol.TryReadUpdateStatusResponse(frame, out var value, out var failure); return (value, failure);
     }
 
     private async Task<T?> QueryAsync<T>(byte[] request,

@@ -1,4 +1,4 @@
-using Vantrel.Security.Service;
+﻿using Vantrel.Security.Service;
 using Microsoft.Extensions.Hosting.WindowsServices;
 using Microsoft.Extensions.Logging.EventLog;
 using Vantrel.Security.Core;
@@ -30,6 +30,8 @@ builder.Services.AddSingleton<TrustedManifestIntegrityStore>();
 builder.Services.AddSingleton<TrustedManifestIntegrityHistoryStore>();
 builder.Services.AddSingleton<ReleasePolicyStore>();
 builder.Services.AddSingleton<ReleaseProvenanceStore>();
+builder.Services.AddSingleton<UpdateTransactionStore>();
+builder.Services.AddSingleton<UpdateTransactionJournalStore>();
 builder.Services.AddSingleton<CommandAuditStore>();
 builder.Services.AddSingleton<CommandRequestRegistry>();
 builder.Services.AddSingleton<CommandRejectionLogLimiter>();
@@ -48,6 +50,8 @@ builder.Services.AddHostedService<ComponentInspectionWorker>();
 builder.Services.AddHostedService<ComponentIntegrityWorker>();
 builder.Services.AddHostedService<TrustedManifestIntegrityWorker>();
 builder.Services.AddHostedService<ReleaseProvenanceWorker>();
+builder.Services.AddHostedService<UpdateTransactionStatusWorker>();
+builder.Services.AddHostedService<UpdateTransactionPolicyCommitWorker>();
 builder.Services.AddHostedService<CommandPipeWorker>();
 builder.Services.AddHostedService<StatusPipeWorker>();
 

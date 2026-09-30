@@ -1,8 +1,8 @@
-# Vantrel Security
+# Kestermere Security
 
 Vantrel Security is a planned Windows security and system health application. The prototype has a manageable Windows Service, local status communication, and read-only System Health, Activity, Scan Capability, and fixed component-inspection views in a non-elevated WPF desktop. It does **not** scan, monitor threats, block, or remove threats.
 
-**Vantrel Security is pre-release development software and must not be relied upon as the sole antivirus or endpoint protection solution.** Keep Defender and Windows Firewall enabled.
+**Kestermere Security is pre-release development software and must not be relied upon as the sole antivirus or endpoint protection solution.** Keep Defender and Windows Firewall enabled.
 
 ## Projects and requirements
 
@@ -79,7 +79,7 @@ The service writes lifecycle and error events to the bounded Windows Application
 
 The status pipe has an explicit non-inherited ACL: the service identity owns it; locally logged-on interactive users receive only data read/write, attribute read, permission read, and synchronization rights. They cannot create another pipe instance. Network and anonymous logons have no access rule. The service creates the first and only pipe instance and retains it until shutdown. The desktop connects to `.` with anonymous impersonation level, validates the typed versioned response, and in installed mode requires the Windows service to report Running. No HTTP listener or network port is opened. Messages are capped at 4 KiB and each connection has a three-second deadline.
 
-The ACL permits any locally interactive user to request the same non-sensitive status, coarse health data, bounded Activity observations, and fixed Scan Capability snapshot. Local users can still delay the single pipe instance for up to three seconds per connection, so this is not a general privileged-command channel. **Tasks 003â€“008 passed installed-service validation.** Task 008 does not add a scanner or a command surface. Its non-elevated desktop showed the fixed capability snapshot, disconnected on service stop, and recovered in the same process with a newer sample after restart. Vantrel Protection Status remains Unavailable. There is no installer, code signing, or protection engine. See [docs/SECURITY.md](docs/SECURITY.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), and [docs/SERVICE-MANUAL.md](docs/SERVICE-MANUAL.md).
+The ACL permits any locally interactive user to request the same non-sensitive status, coarse health data, bounded Activity observations, and fixed Scan Capability snapshot. Local users can still delay the single pipe instance for up to three seconds per connection, so this is not a general privileged-command channel. **Tasks 003â€“008 passed installed-service validation.** Task 008 does not add a scanner or a command surface. Its non-elevated desktop showed the fixed capability snapshot, disconnected on service stop, and recovered in the same process with a newer sample after restart. Kestermere Protection Status remains Unavailable. There is no installer, code signing, or protection engine. See [docs/SECURITY.md](docs/SECURITY.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), and [docs/SERVICE-MANUAL.md](docs/SERVICE-MANUAL.md).
 
 Task 009 installed LocalService validation passed on 2026-09-18 after a corrected dependency-injection activation path. It observes only the installed service DLL and remains an observation, not a detection or trust verdict.
 
@@ -105,3 +105,13 @@ Task 015 adds the tenth fixed, parameter-free Status.v1 request, `get_release_me
 ## Task 014 read-only signed installation integrity history
 
 Task 014 adds the ninth fixed, parameter-free Status.v1 query, `get_trusted_manifest_integrity_history`. It exposes at most 12 newest-first completed published signed-installation evaluations for the current memory-only service session. Each record contains only its UTC sample time, bounded signature state, and bounded evaluation. The history has no component name, reason, path, hash, request ID, caller, audit, error, or correlation data. Scheduled and authorized refresh evaluations use the same publication path: the service publishes the current immutable integrity snapshot first and then appends its minimal history record. History is supplementary; only `get_trusted_manifest_integrity` establishes current integrity truth. Command.v1 remains unchanged and exposes no history command.
+
+### Task 016 ï¿½ guarded offline release transaction
+
+Task 016 adds an Administrator-operated, offline update transaction. It has no network discovery, desktop update authority, Command.v1 update command, or arbitrary path input. The fixed candidate and backup release contain exactly the seven trusted service components plus `Vantrel.Security.TrustedManifest` and `Vantrel.Security.ReleaseMetadata`. Before service stop, the installed predecessor, staged candidate, and copied predecessor backup are independently verified against the release policy and both signed chains. Replacement and restoration address only the fixed Program Files service root and the exact nine-file set.
+
+The transaction journal is fixed under ProgramData and Status.v1 exposes only a bounded, path-free, read-only `get_update_status` snapshot. LocalService may commit the already post-verified target policy from the fixed journal, but never writes Program Files. Rollback is allowed only while durable policy remains the verified predecessor; target commitment, unreadable policy, or journal/policy disagreement fails closed and forbids automatic downgrade. Crash recovery treats `ServiceStopped` as an untrusted installed state and restores only the independently verified immediate predecessor backup.
+
+## Public brand and compatibility identities
+
+**Kestermere Security** — *Security & System Integrity* — is the public product name and **Mauro Interactive** is the publisher. This branding does not rename the installed compatibility architecture. `VantrelSecurityService`, `Vantrel.Security.*` assemblies and namespaces, `Vantrel.Security.Status.v1` and `Vantrel.Security.Command.v1`, signed sidecars, fixed installation and ProgramData paths, schemas, signing key IDs, and the release-metadata product identifier `vantrel-security` remain intentionally unchanged. They continue to identify already installed and signed releases.

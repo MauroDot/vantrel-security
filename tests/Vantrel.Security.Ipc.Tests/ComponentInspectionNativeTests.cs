@@ -101,6 +101,8 @@ public sealed class ComponentInspectionNativeTests
         services.AddSingleton<TrustedManifestIntegrityHistoryStore>();
         services.AddSingleton<ReleasePolicyStore>();
         services.AddSingleton<ReleaseProvenanceStore>();
+        services.AddSingleton<UpdateTransactionStore>();
+        services.AddSingleton<UpdateTransactionJournalStore>();
         services.AddSingleton<TrustedManifestIntegritySource>();
         services.AddSingleton<ReleaseProvenanceSource>();
         services.AddSingleton<CommandAuditStore>();
@@ -111,6 +113,8 @@ public sealed class ComponentInspectionNativeTests
         services.AddHostedService<ComponentIntegrityWorker>();
         services.AddHostedService<TrustedManifestIntegrityWorker>();
         services.AddHostedService<ReleaseProvenanceWorker>();
+        services.AddHostedService<UpdateTransactionStatusWorker>();
+        services.AddHostedService<UpdateTransactionPolicyCommitWorker>();
         services.AddHostedService<StatusPipeWorker>();
         services.AddHostedService<CommandPipeWorker>();
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });

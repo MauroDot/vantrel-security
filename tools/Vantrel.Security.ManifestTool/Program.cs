@@ -87,6 +87,7 @@ try
 
     void VerifyReleaseMetadata()
     {
+        VerifyExactReleaseSet();
         var manifestBytes = VerifyManifestAndComponents();
         var metadataBytes = File.ReadAllBytes(metadataPath);
         if (!ReleaseMetadataCodec.TryParse(metadataBytes, out var metadata, out _)) throw new InvalidDataException("Release metadata parse failed.");
@@ -96,6 +97,21 @@ try
         if (!CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(manifestHash), Encoding.ASCII.GetBytes(metadata!.ManifestSha256)))
             throw new InvalidDataException("Release metadata manifest binding is invalid.");
         Console.WriteLine("Release metadata signature, manifest binding, and all seven payload hashes verified.");
+    }
+
+    void VerifyExactReleaseSet()
+    {
+        var required = files.Select(item => item.FileName)
+            .Append("Vantrel.Security.TrustedManifest")
+            .Append("Vantrel.Security.ReleaseMetadata")
+            .ToHashSet(StringComparer.Ordinal);
+        if ((File.GetAttributes(payload) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("Release payload root must not be a reparse point.");
+        var entries = Directory.EnumerateFileSystemEntries(payload).ToArray();
+        if (entries.Length != required.Count || entries.Any(path =>
+            (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0 ||
+            !File.Exists(path) || !required.Remove(Path.GetFileName(path))))
+            throw new InvalidDataException("Release payload must contain exactly the fixed signed service release files.");
     }
 
     switch (command)

@@ -15,6 +15,12 @@ internal sealed record VerifiedRelease
         ArgumentNullException.ThrowIfNull(metadata);
         return new(metadata.ReleaseSequence, metadata.ManifestSha256);
     }
+    internal static VerifiedRelease FromVerifiedEvidence(ulong sequence, string manifestSha256)
+    {
+        if (sequence == 0 || manifestSha256 is not { Length: 64 } || !manifestSha256.All(c => c is >= '0' and <= '9' or >= 'A' and <= 'F'))
+            throw new ArgumentException("Verified release evidence is invalid.");
+        return new(sequence, manifestSha256);
+    }
 }
 
 /// <summary>Fixed LocalService-owned durable high-water policy. It never accepts raw metadata, paths, or IPC input.</summary>
@@ -39,6 +45,19 @@ public sealed class ReleasePolicyStore
     }
 
     public ReleasePolicyRecord? Snapshot() => Volatile.Read(ref _snapshot);
+
+    internal async Task<(ReleasePolicyRecord? Record, ReleasePolicyParseFailure Failure)> ReadDurableAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var loaded = LoadExisting();
+            if (loaded.Failure == ReleasePolicyParseFailure.None) Volatile.Write(ref _snapshot, loaded.Record);
+            return loaded;
+        }
+        finally { _gate.Release(); }
+    }
 
     internal async Task<ReleasePolicyDecision> EvaluateVerifiedAsync(VerifiedRelease verified, CancellationToken cancellationToken)
     {
@@ -139,7 +158,15 @@ public sealed class ReleasePolicyStore
             if (existing) File.Replace(temporary, _policyPath, destinationBackupFileName: null, ignoreMetadataErrors: false);
             else File.Move(temporary, _policyPath, overwrite: false);
             RejectReparse(_policyPath);
-            if (_applyAcls) ApplyFileAcl(_policyPath);
+            if (_applyAcls)
+            {
+                ApplyFileAcl(_policyPath);
+                if (existing)
+                {
+                    var validation = UpdateFilesystemSecurity.ValidateLocalServiceReplacedMutableFileOnDisk(new FileInfo(_policyPath));
+                    if (!validation.IsMatch) throw new IOException("LocalService-replaced policy descriptor verification failed: " + validation.Mismatch);
+                }
+            }
             var (read, failure) = LoadExisting();
             if (failure != ReleasePolicyParseFailure.None || read != policy) throw new IOException("Policy verification after atomic move failed.");
         }
@@ -171,7 +198,7 @@ public sealed class ReleasePolicyStore
 
     private static void ApplyFileAcl(string path)
     {
-        if (OperatingSystem.IsWindows()) new FileInfo(path).SetAccessControl(CreateRequiredFileSecurity());
+        if (OperatingSystem.IsWindows()) new FileInfo(path).SetAccessControl(UpdateFilesystemSecurity.CreateMutableFileDaclDescriptor());
     }
 
     internal static DirectorySecurity CreateRequiredDirectorySecurity()
@@ -185,12 +212,5 @@ public sealed class ReleasePolicyStore
     }
 
     internal static FileSecurity CreateRequiredFileSecurity()
-    {
-        var security = new FileSecurity();
-        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-        security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.LocalServiceSid, null), FileSystemRights.Modify, AccessControlType.Allow));
-        security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), FileSystemRights.FullControl, AccessControlType.Allow));
-        security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null), FileSystemRights.FullControl, AccessControlType.Allow));
-        return security;
-    }
+        => UpdateFilesystemSecurity.CreateMutableFileDaclDescriptor();
 }
