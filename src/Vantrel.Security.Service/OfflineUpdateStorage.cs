@@ -42,6 +42,7 @@ internal sealed class OfflineUpdateStorage
         _applyAcls = applyAcls;
     }
     internal string StagedCandidate => _stagedCandidate;
+    internal string InstalledRoot => _installedRoot;
     internal string PrivateCandidate(string transactionId) => Child(_transactionsRoot, transactionId, "candidate");
     internal string Backup(string backupId) => Child(_backupsRoot, backupId);
 

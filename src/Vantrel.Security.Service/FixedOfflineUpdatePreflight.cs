@@ -7,15 +7,19 @@ internal sealed class FixedOfflineUpdatePreflight(OfflineReleaseVerifier verifie
 {
     public async Task VerifyCandidateAndBaselineAsync(UpdateTransactionJournal journal, CancellationToken token)
     {
-        var baseline = await verifier.VerifyInstalledBaselineAsync(policy, token);
+        var baseline = await verifier.VerifyInstalledBaselineAsync(storage.InstalledRoot, policy, token);
         if (baseline.Result != OfflineReleaseVerificationResult.Verified || baseline.Release is null ||
             baseline.Release.Sequence != journal.PriorReleaseSequence || !string.Equals(baseline.Release.ManifestSha256, journal.PriorManifestSha256, StringComparison.Ordinal))
             throw new IOException("Installed predecessor baseline is not the journal predecessor.");
 
-        var candidate = await verifier.VerifyCandidateAsync(storage.StagedCandidate, policy, token);
-        if (candidate.PolicyDecision != ReleasePolicyDecision.HigherRelease || candidate.Sequence != journal.TargetReleaseSequence ||
-            !string.Equals(candidate.ManifestSha256, journal.TargetManifestSha256, StringComparison.Ordinal))
+        var staged = await verifier.VerifyCandidateAsync(storage.StagedCandidate, policy, token);
+        if (!MatchesJournalTarget(staged, journal))
             throw new IOException("Fixed staged candidate is not the journal target.");
+
+        await storage.CopyStagedToPrivateAsync(journal.TransactionId, token);
+        var candidate = await verifier.VerifyCandidateAsync(storage.PrivateCandidate(journal.TransactionId), policy, token);
+        if (!MatchesJournalTarget(candidate, journal))
+            throw new IOException("Fixed private candidate is not the journal target.");
     }
 
     public async Task CreateAndVerifyPredecessorBackupAsync(UpdateTransactionJournal journal, CancellationToken token)
@@ -28,6 +32,10 @@ internal sealed class FixedOfflineUpdatePreflight(OfflineReleaseVerifier verifie
             durable.Record.HighestAcceptedReleaseSequence != backup.Sequence || !string.Equals(durable.Record.AcceptedManifestSha256, backup.ManifestSha256, StringComparison.Ordinal))
             throw new IOException("Fixed predecessor backup is not independently verified against durable policy.");
     }
+
+    private static bool MatchesJournalTarget(VerifiedOfflineRelease candidate, UpdateTransactionJournal journal) =>
+        candidate.PolicyDecision == ReleasePolicyDecision.HigherRelease && candidate.Sequence == journal.TargetReleaseSequence &&
+        string.Equals(candidate.ManifestSha256, journal.TargetManifestSha256, StringComparison.Ordinal);
 }
 
 /// <summary>Fixed adapter used only by an elevated, offline transaction invocation.</summary>

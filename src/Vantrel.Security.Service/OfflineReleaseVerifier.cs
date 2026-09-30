@@ -57,11 +57,15 @@ internal sealed class OfflineReleaseVerifier
     internal async Task<VerifiedOfflineRelease> VerifyInstalledAsync(ReleasePolicyStore policy, CancellationToken token) =>
         await VerifyCandidateAsync(FixedUpdatePaths.InstalledServiceRoot, policy, token);
 
-    internal async Task<OfflineReleaseVerification> VerifyInstalledBaselineAsync(ReleasePolicyStore policy, CancellationToken token)
+    internal Task<OfflineReleaseVerification> VerifyInstalledBaselineAsync(ReleasePolicyStore policy, CancellationToken token) =>
+        VerifyInstalledBaselineAsync(FixedUpdatePaths.InstalledServiceRoot, policy, token);
+
+    // The only runtime caller supplies OfflineUpdateStorage's validated, code-owned installed root.
+    internal async Task<OfflineReleaseVerification> VerifyInstalledBaselineAsync(string installedRoot, ReleasePolicyStore policy, CancellationToken token)
     {
         try
         {
-            var release = await VerifyInstalledAsync(policy, token);
+            var release = await VerifyCandidateAsync(installedRoot, policy, token);
             var accepted = policy.Snapshot();
             if (release.PolicyDecision == ReleasePolicyDecision.PolicyUnavailable || accepted is null)
                 return new(OfflineReleaseVerificationResult.PolicyUnavailable, null);
