@@ -6,11 +6,20 @@ namespace Vantrel.Security.Service;
 /// <summary>Fixed nine-file Program Files replacement primitive. It is invoked only by the offline transaction engine after SCM stop.</summary>
 internal sealed class FixedReleaseFileReplacer
 {
+    private readonly OfflineUpdateStorage _storage;
+
+    internal FixedReleaseFileReplacer() : this(new OfflineUpdateStorage()) { }
+
+    internal FixedReleaseFileReplacer(OfflineUpdateStorage storage)
+    {
+        _storage = storage ?? throw new ArgumentNullException(nameof(storage));
+    }
+
     internal async Task ReplaceFromPrivateCandidateAsync(string transactionId, CancellationToken token) =>
-        await ReplaceExactAsync(new OfflineUpdateStorage().PrivateCandidate(transactionId), FixedUpdatePaths.InstalledServiceRoot, token);
+        await ReplaceExactAsync(_storage.PrivateCandidate(transactionId), _storage.InstalledRoot, token);
 
     internal async Task RestoreFromBackupAsync(string backupId, CancellationToken token) =>
-        await ReplaceExactAsync(new OfflineUpdateStorage().Backup(backupId), FixedUpdatePaths.InstalledServiceRoot, token);
+        await ReplaceExactAsync(_storage.Backup(backupId), _storage.InstalledRoot, token);
 
     internal static async Task ReplaceExactAsync(string verifiedSource, string installedRoot, CancellationToken token)
     {

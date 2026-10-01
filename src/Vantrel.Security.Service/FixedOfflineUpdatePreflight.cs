@@ -39,9 +39,22 @@ internal sealed class FixedOfflineUpdatePreflight(OfflineReleaseVerifier verifie
 }
 
 /// <summary>Fixed adapter used only by an elevated, offline transaction invocation.</summary>
-internal sealed class FixedOfflineUpdateReleaseFiles : IOfflineUpdateReleaseFiles
+internal sealed class FixedOfflineUpdateReleaseFiles(OfflineReleaseVerifier verifier, ReleasePolicyStore policy,
+    OfflineUpdateStorage storage) : IOfflineUpdateReleaseFiles
 {
-    private readonly FixedReleaseFileReplacer _replacer = new();
+    private readonly FixedReleaseFileReplacer _replacer = new(storage);
     public Task ReplaceFromVerifiedPrivateCandidateAsync(UpdateTransactionJournal journal, CancellationToken token) => _replacer.ReplaceFromPrivateCandidateAsync(journal.TransactionId, token);
-    public Task RestoreVerifiedPredecessorAsync(UpdateTransactionJournal journal, CancellationToken token) => _replacer.RestoreFromBackupAsync(journal.BackupId, token);
+
+    public async Task RestoreVerifiedPredecessorAsync(UpdateTransactionJournal journal, CancellationToken token)
+    {
+        var backup = await verifier.VerifyChainAsync(storage.Backup(journal.BackupId), token);
+        var durable = await policy.ReadDurableAsync(token);
+        if (durable.Failure != ReleasePolicyParseFailure.None || durable.Record is null ||
+            backup.Sequence != journal.PriorReleaseSequence || !string.Equals(backup.ManifestSha256, journal.PriorManifestSha256, StringComparison.Ordinal) ||
+            durable.Record.HighestAcceptedReleaseSequence != journal.PriorReleaseSequence ||
+            !string.Equals(durable.Record.AcceptedManifestSha256, journal.PriorManifestSha256, StringComparison.Ordinal))
+            throw new IOException("Fixed predecessor backup is not independently verified against durable policy at restore.");
+
+        await _replacer.RestoreFromBackupAsync(journal.BackupId, token);
+    }
 }

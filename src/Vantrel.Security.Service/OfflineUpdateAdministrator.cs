@@ -50,7 +50,7 @@ public sealed class OfflineUpdateAdministrator
         var verifier = new OfflineReleaseVerifier(); var policy = new ReleasePolicyStore(); var storage = new OfflineUpdateStorage();
         var control = new WindowsVantrelServiceControl(); var health = new FixedReleaseHealthVerifier(control, verifier, policy);
         var engine = new OfflineUpdateTransactionEngine(new FixedOfflineUpdatePreflight(verifier, policy, storage), control,
-            new FixedOfflineUpdateReleaseFiles(), health, new JournalAdapter(journals));
+            new FixedOfflineUpdateReleaseFiles(verifier, policy, storage), health, new JournalAdapter(journals));
         if (existing is not null) return await engine.RecoverAsync(existing, token);
 
         var installed = await verifier.VerifyInstalledBaselineAsync(policy, token);
