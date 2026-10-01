@@ -149,7 +149,10 @@ internal sealed class OfflineUpdateTransactionEngine(IOfflineUpdatePreflight pre
             return journal.Phase;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-        catch { return await PersistFailedAsync(journal, token); }
+        // RollbackRequired was persisted before any restore write. Retain it after a
+        // partial restore, restart, or predecessor-health failure so a later invocation
+        // can reauthenticate the backup and repair the fixed set. Failed is terminal.
+        catch { return journal.Phase; }
     }
 
     private async Task<UpdateTransactionPhase> PersistFailedAsync(UpdateTransactionJournal journal, CancellationToken token)
