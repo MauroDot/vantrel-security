@@ -7,6 +7,31 @@ namespace Vantrel.Security.Service;
 internal sealed class WindowsVantrelServiceControl : IOfflineUpdateServiceControl
 {
     internal static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
+    private readonly Func<CancellationToken, Task<ServiceControllerStatus>> _readState;
+
+    internal WindowsVantrelServiceControl() : this(ReadFixedStateAsync) { }
+
+    // Internal state-provider seam for tests; production always queries the fixed service.
+    internal WindowsVantrelServiceControl(Func<CancellationToken, Task<ServiceControllerStatus>> readState)
+        => _readState = readState ?? throw new ArgumentNullException(nameof(readState));
+
+    public async Task RequireStoppedAsync(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        var state = await _readState(token).WaitAsync(Timeout, token);
+        token.ThrowIfCancellationRequested();
+        if (state != ServiceControllerStatus.Stopped)
+            throw new IOException("Fixed service must be stopped before rollback restore.");
+    }
+
+    private static Task<ServiceControllerStatus> ReadFixedStateAsync(CancellationToken token) => Task.Run(() =>
+    {
+        token.ThrowIfCancellationRequested();
+        using var service = new ServiceController(StatusProtocol.ServiceName);
+        service.Refresh();
+        return service.Status;
+    }, token);
+
     internal Task<bool> IsRunningAsync(CancellationToken token) => Task.Run(() =>
     {
         token.ThrowIfCancellationRequested(); using var service = new ServiceController(StatusProtocol.ServiceName); service.Refresh(); return service.Status == ServiceControllerStatus.Running;

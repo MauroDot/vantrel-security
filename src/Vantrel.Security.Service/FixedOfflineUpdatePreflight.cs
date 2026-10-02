@@ -40,7 +40,7 @@ internal sealed class FixedOfflineUpdatePreflight(OfflineReleaseVerifier verifie
 
 /// <summary>Fixed adapter used only by an elevated, offline transaction invocation.</summary>
 internal sealed class FixedOfflineUpdateReleaseFiles(OfflineReleaseVerifier verifier, ReleasePolicyStore policy,
-    OfflineUpdateStorage storage) : IOfflineUpdateReleaseFiles
+    OfflineUpdateStorage storage, IOfflineUpdateServiceControl service) : IOfflineUpdateReleaseFiles
 {
     private readonly FixedReleaseFileReplacer _replacer = new(storage);
     public Task ReplaceFromVerifiedPrivateCandidateAsync(UpdateTransactionJournal journal, CancellationToken token) => _replacer.ReplaceFromPrivateCandidateAsync(journal.TransactionId, token);
@@ -55,6 +55,9 @@ internal sealed class FixedOfflineUpdateReleaseFiles(OfflineReleaseVerifier veri
             !string.Equals(durable.Record.AcceptedManifestSha256, journal.PriorManifestSha256, StringComparison.Ordinal))
             throw new IOException("Fixed predecessor backup is not independently verified against durable policy at restore.");
 
+        // Point-in-time observation after authentication, not continuous SCM exclusion
+        // across the nine-file replacement. This guard never stops or starts the service.
+        await service.RequireStoppedAsync(token);
         await _replacer.RestoreFromBackupAsync(journal.BackupId, token);
     }
 }

@@ -223,6 +223,7 @@ public sealed class FixedOfflineUpdatePreflightTests
 
     private class CountingServiceProbe : IOfflineUpdateServiceControl
     {
+        public Task RequireStoppedAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); return Task.CompletedTask; }
         internal int StopCount, StartCount;
         public virtual Task StopAsync(CancellationToken token) { StopCount++; return Task.CompletedTask; }
         public Task StartAsync(CancellationToken token) { StartCount++; return Task.CompletedTask; }

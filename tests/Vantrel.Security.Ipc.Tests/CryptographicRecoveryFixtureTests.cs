@@ -65,7 +65,7 @@ public sealed class CryptographicRecoveryFixtureTests
         foreach (var name in FixedServiceReleaseFiles.AllNames) File.Copy(Path.Combine(source, name), Path.Combine(destination, name), true);
     }
     private sealed class EmptyPreflight : IOfflineUpdatePreflight { public Task VerifyCandidateAndBaselineAsync(UpdateTransactionJournal journal, CancellationToken token) => Task.CompletedTask; public Task CreateAndVerifyPredecessorBackupAsync(UpdateTransactionJournal journal, CancellationToken token) => Task.CompletedTask; }
-    private sealed class StartProbe : IOfflineUpdateServiceControl { public Task StopAsync(CancellationToken token) => Task.CompletedTask; public Task StartAsync(CancellationToken token) => Task.CompletedTask; }
+    private sealed class StartProbe : IOfflineUpdateServiceControl { public Task StopAsync(CancellationToken token) => Task.CompletedTask; public Task StartAsync(CancellationToken token) => Task.CompletedTask; public Task RequireStoppedAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); return Task.CompletedTask; } }
     private sealed class CryptoFiles(string backup, string installed, OfflineReleaseVerifier verifier) : IOfflineUpdateReleaseFiles
     {
         internal int Restores;
@@ -108,8 +108,8 @@ public sealed class CryptographicRecoveryFixtureTests
         var journal = new UpdateTransactionJournal("0123456789abcdef0123456789abcdef", priorSequence, priorHash, target.Sequence, target.ManifestSha256, UpdateTransactionPhase.ServiceStopped, "fedcba9876543210fedcba9876543210", new DateTimeOffset(2026, 9, 22, 0, 0, 0, TimeSpan.Zero));
         var files = new PolicyBoundCryptoFiles(fixture.Predecessor, installed, verifier, policySequence, policyHash); var store = new CryptoJournal();
         var engine = new OfflineUpdateTransactionEngine(new EmptyPreflight(), new StartProbe(), files, new PredecessorHealth(), store);
-        Assert.AreEqual(UpdateTransactionPhase.Failed, await engine.RecoverAsync(journal, CancellationToken.None));
-        Assert.AreEqual(0, files.Restores); Assert.AreEqual(UpdateTransactionPhase.Failed, store.Phase);
+        Assert.AreEqual(UpdateTransactionPhase.RollbackRequired, await engine.RecoverAsync(journal, CancellationToken.None));
+        Assert.AreEqual(0, files.Restores); Assert.AreEqual(UpdateTransactionPhase.RollbackRequired, store.Phase);
         Assert.AreEqual(policySequence, files.PolicySequence); Assert.AreEqual(policyHash, files.PolicyManifestHash);
         await Assert.ThrowsExceptionAsync<InvalidDataException>(() => verifier.VerifyChainAsync(installed, CancellationToken.None));
     }

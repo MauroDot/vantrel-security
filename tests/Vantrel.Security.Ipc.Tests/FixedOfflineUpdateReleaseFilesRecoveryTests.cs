@@ -28,7 +28,7 @@ public sealed class FixedOfflineUpdateReleaseFilesRecoveryTests
     [DataRow("missing")]
     [DataRow("extra")]
     [DataRow("directory")]
-    public async Task Tampered_or_invalid_backup_is_failed_before_restore(string kind)
+    public async Task Tampered_or_invalid_backup_retains_rollback_required_before_restore(string kind)
     {
         await using var fixture = await RecoveryFixture.CreateAsync();
         await fixture.TamperBackupAsync(kind);
@@ -37,7 +37,7 @@ public sealed class FixedOfflineUpdateReleaseFilesRecoveryTests
     }
 
     [TestMethod]
-    public async Task Reparse_backup_is_failed_before_restore()
+    public async Task Reparse_backup_retains_rollback_required_before_restore()
     {
         await using var fixture = await RecoveryFixture.CreateAsync();
         try
@@ -57,7 +57,7 @@ public sealed class FixedOfflineUpdateReleaseFilesRecoveryTests
     }
 
     [TestMethod]
-    public async Task Different_valid_signed_predecessor_is_failed_before_restore()
+    public async Task Different_valid_signed_predecessor_retains_rollback_required_before_restore()
     {
         await using var fixture = await RecoveryFixture.CreateAsync();
         await fixture.WriteReleaseAsync(fixture.Backup, 3, "different-predecessor");
@@ -69,7 +69,7 @@ public sealed class FixedOfflineUpdateReleaseFilesRecoveryTests
     [DataRow("unavailable")]
     [DataRow("target")]
     [DataRow("unrelated")]
-    public async Task Unavailable_or_nonpredecessor_durable_policy_is_failed_before_restore(string kind)
+    public async Task Unavailable_or_nonpredecessor_durable_policy_retains_rollback_required_before_restore(string kind)
     {
         await using var fixture = await RecoveryFixture.CreateAsync();
         await fixture.WritePolicyAsync(kind);
@@ -104,7 +104,7 @@ public sealed class FixedOfflineUpdateReleaseFilesRecoveryTests
             Service = new ServiceProbe();
             Health = new HealthProbe();
             Journal = new JournalProbe();
-            Files = new FixedOfflineUpdateReleaseFiles(Verifier, Policy, Storage);
+            Files = new FixedOfflineUpdateReleaseFiles(Verifier, Policy, Storage, Service);
             Engine = new OfflineUpdateTransactionEngine(new EmptyPreflight(), Service, Files, Health, Journal);
         }
 
@@ -141,11 +141,11 @@ public sealed class FixedOfflineUpdateReleaseFilesRecoveryTests
         internal async Task AssertRestoreRejectedAsync()
         {
             var before = await InstalledFingerprintAsync();
-            Assert.AreEqual(UpdateTransactionPhase.Failed, await RecoverAsync());
+            Assert.AreEqual(UpdateTransactionPhase.RollbackRequired, await RecoverAsync());
             Assert.AreEqual(0, Service.StartCount);
             Assert.AreEqual(0, Health.PredecessorVerificationCount);
             Assert.AreEqual(before, await InstalledFingerprintAsync(), "Restore must not begin before backup reauthentication succeeds.");
-            CollectionAssert.AreEqual(new[] { UpdateTransactionPhase.RollbackRequired, UpdateTransactionPhase.Failed }, Journal.Phases);
+            CollectionAssert.AreEqual(new[] { UpdateTransactionPhase.RollbackRequired }, Journal.Phases);
         }
 
         internal Task<UpdateTransactionPhase> RecoverAsync() => Engine.RecoverAsync(Transaction, CancellationToken.None);
@@ -223,6 +223,7 @@ public sealed class FixedOfflineUpdateReleaseFilesRecoveryTests
     }
     private sealed class ServiceProbe : IOfflineUpdateServiceControl
     {
+        public Task RequireStoppedAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); return Task.CompletedTask; }
         internal int StartCount;
         public Task StopAsync(CancellationToken token) => Task.CompletedTask;
         public Task StartAsync(CancellationToken token) { StartCount++; return Task.CompletedTask; }

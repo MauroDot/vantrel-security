@@ -18,6 +18,7 @@ internal interface IOfflineUpdateServiceControl
 {
     Task StopAsync(CancellationToken token);
     Task StartAsync(CancellationToken token);
+    Task RequireStoppedAsync(CancellationToken token);
 }
 internal interface IOfflineUpdateReleaseFiles
 {
