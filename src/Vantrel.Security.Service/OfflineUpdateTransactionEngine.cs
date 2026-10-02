@@ -133,9 +133,16 @@ internal sealed class OfflineUpdateTransactionEngine(IOfflineUpdatePreflight pre
     private async Task<UpdateTransactionPhase> RollbackAsync(UpdateTransactionJournal journal, CancellationToken token)
     {
         // This durable read is deliberately immediately before restore. A target high-water commit permanently forbids downgrade.
+        var observation = await health.ObservePolicyCommitAsync(journal, token);
         if (journal.Phase is UpdateTransactionPhase.PolicyCommitted or UpdateTransactionPhase.Completed ||
-            await health.ObservePolicyCommitAsync(journal, token) is not PolicyCommitObservation.PredecessorRetained)
+            observation is not PolicyCommitObservation.PredecessorRetained)
+        {
+            // A prior restore, start, or health failure has already made this journal
+            // recoverable. A later unavailable, unrelated, or target policy still
+            // blocks rollback, but must not attempt the illegal terminal transition.
+            if (journal.Phase == UpdateTransactionPhase.RollbackRequired) return journal.Phase;
             return await PersistFailedAsync(journal, token);
+        }
 
         if (journal.Phase != UpdateTransactionPhase.RollbackRequired)
             journal = await MoveAsync(journal, UpdateTransactionPhase.RollbackRequired, token);

@@ -118,6 +118,43 @@ public sealed class RollbackRecoveryPersistenceTests
     }
 
     [DataTestMethod]
+    [DataRow("partial", "target")]
+    [DataRow("partial", "unavailable")]
+    [DataRow("partial", "corrupt")]
+    [DataRow("partial", "mismatch")]
+    [DataRow("restart", "target")]
+    [DataRow("restart", "unavailable")]
+    [DataRow("restart", "corrupt")]
+    [DataRow("restart", "mismatch")]
+    [DataRow("health", "target")]
+    [DataRow("health", "unavailable")]
+    [DataRow("health", "corrupt")]
+    [DataRow("health", "mismatch")]
+    public async Task Blocking_policy_after_recoverable_rollback_failure_retains_durable_phase_without_side_effects(string failure, string policy)
+    {
+        await using var fixture = await DurableFixture.CreateAsync();
+        var files = new FailAfterCopiesThenRestore(fixture, failure == "partial" ? 4 : null);
+        if (failure == "restart") fixture.Service.FailStartsRemaining = 1;
+        if (failure == "health") fixture.Health.FailPredecessorVerificationRemaining = 1;
+        var engine = fixture.CreateEngine(files);
+
+        Assert.AreEqual(UpdateTransactionPhase.RollbackRequired, await fixture.RecoverAsync(engine));
+        await fixture.AssertDurablePhaseAsync(UpdateTransactionPhase.RollbackRequired);
+        var attemptsBefore = files.RealRestoreAttemptCount;
+        var restoresBefore = files.RealRestoreCount;
+        var startsBefore = fixture.Service.StartCount;
+        var policyBefore = await fixture.WriteAndReadPolicyAsync(policy);
+
+        Assert.AreEqual(UpdateTransactionPhase.RollbackRequired, await fixture.RecoverAsync(engine));
+
+        await fixture.AssertDurablePhaseAsync(UpdateTransactionPhase.RollbackRequired);
+        Assert.AreEqual(attemptsBefore, files.RealRestoreAttemptCount);
+        Assert.AreEqual(restoresBefore, files.RealRestoreCount);
+        Assert.AreEqual(startsBefore, fixture.Service.StartCount);
+        CollectionAssert.AreEqual(policyBefore, await fixture.ReadPolicyBytesAsync());
+    }
+
+    [DataTestMethod]
     [DataRow("target")]
     [DataRow("unavailable")]
     [DataRow("mismatch")]
@@ -282,9 +319,22 @@ public sealed class RollbackRecoveryPersistenceTests
         {
             var path = Path.Combine(Root, "ReleasePolicy", ReleasePolicyStore.PolicyFileName);
             if (kind == "unavailable") { File.Delete(path); return; }
+            if (kind == "corrupt") { await File.WriteAllTextAsync(path, "not-a-policy"); return; }
             var record = kind == "target" ? new ReleasePolicyRecord(Journal.TargetReleaseSequence, Journal.TargetManifestSha256) :
                 new ReleasePolicyRecord(99, new string('A', 64));
             await File.WriteAllBytesAsync(path, ReleasePolicyCodec.Serialize(record));
+        }
+
+        internal async Task<byte[]> WriteAndReadPolicyAsync(string kind)
+        {
+            await WritePolicyAsync(kind);
+            return await ReadPolicyBytesAsync();
+        }
+
+        internal async Task<byte[]> ReadPolicyBytesAsync()
+        {
+            var path = Path.Combine(Root, "ReleasePolicy", ReleasePolicyStore.PolicyFileName);
+            return File.Exists(path) ? await File.ReadAllBytesAsync(path) : [];
         }
 
         private async Task WriteReleaseAsync(string root, ulong sequence, string marker)
