@@ -38,8 +38,11 @@ public partial class MainWindow : Window
     private TrustedManifestIntegritySnapshot? _lastTrustedManifestSnapshot;
     private readonly TrustedManifestRefreshRequestState _trustedManifestRefresh = new();
     private CancellationTokenSource? _trustedManifestRefreshCancellation;
-    private readonly LocalFileFingerprintInspector _fileFingerprintInspector = new();
+    private readonly LocalFileInspectionCoordinator _fileInspectionCoordinator = new();
+    private readonly LocalFileFingerprintInspector _fileFingerprintInspector;
+    private readonly AuthenticodePublisherInspector _authenticodePublisherInspector;
     private CancellationTokenSource? _fileInspectionCancellation;
+    private CancellationTokenSource? _publisherInspectionCancellation;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
         IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient, ITrustedManifestIntegrityClient trustedManifestIntegrityClient, IIntegrityRefreshAuditClient integrityRefreshAuditClient, ITrustedManifestIntegrityHistoryClient trustedManifestIntegrityHistoryClient, IReleaseProvenanceClient releaseProvenanceClient, ITrustedManifestRefreshCommandClient trustedManifestRefreshCommandClient,
@@ -58,8 +61,11 @@ public partial class MainWindow : Window
         _updateTransactionClient = updateTransactionClient;
         _trustedManifestRefreshCommandClient = trustedManifestRefreshCommandClient;
         _logger = logger;
+        _fileFingerprintInspector = new LocalFileFingerprintInspector(coordinator: _fileInspectionCoordinator);
+        _authenticodePublisherInspector = new AuthenticodePublisherInspector(coordinator: _fileInspectionCoordinator);
         InitializeComponent();
         RenderFileInspection(FileFingerprintInspectionPresentation.Initial());
+        RenderPublisherInspection(AuthenticodePublisherInspectionPresentation.Initial());
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
         _refreshTimer.Tick += async (_, _) => await RefreshStatusAsync();
         Loaded += async (_, _) =>
@@ -73,6 +79,7 @@ public partial class MainWindow : Window
             _refreshCancellation?.Cancel();
             _trustedManifestRefreshCancellation?.Cancel();
             _fileInspectionCancellation?.Cancel();
+            _publisherInspectionCancellation?.Cancel();
         };
     }
 
@@ -554,25 +561,47 @@ public partial class MainWindow : Window
         FileInspectionFingerprintText.Text = presentation.Sha256 ?? string.Empty;
     }
 
-    private async void ChooseFileForInspectionClicked(object sender, RoutedEventArgs e)
+    private void RenderPublisherInspection(AuthenticodePublisherInspectionPresentation presentation)
+    {
+        PublisherInspectionNoticeText.Text = presentation.NoticeText;
+        PublisherInspectionStateText.Text = presentation.StateText;
+        PublisherInspectionResultPanel.Visibility = presentation.HasResult ? Visibility.Visible : Visibility.Collapsed;
+        PublisherInspectionNameText.Text = presentation.FileName ?? string.Empty;
+        PublisherInspectionByteCountText.Text = presentation.ByteLength?.ToString("N0") ?? string.Empty;
+        PublisherInspectionSignerText.Text = presentation.DeclaredSignerSubject ?? "No declared embedded signer subject was available.";
+    }
+
+    private string? ChooseLocalFile(string title)
     {
         var picker = new Microsoft.Win32.OpenFileDialog
         {
             CheckFileExists = true,
             Multiselect = false,
-            Title = "Choose a file for fingerprint inspection"
+            Title = title
         };
-        if (picker.ShowDialog(this) != true) return;
+        return picker.ShowDialog(this) == true ? picker.FileName : null;
+    }
+
+    private void SetFileInspectionActionsEnabled(bool enabled)
+    {
+        ChooseFileForInspectionButton.IsEnabled = enabled;
+        ChooseFileForPublisherInspectionButton.IsEnabled = enabled;
+    }
+
+    private async void ChooseFileForInspectionClicked(object sender, RoutedEventArgs e)
+    {
+        var selectedPath = ChooseLocalFile("Choose a file for fingerprint inspection");
+        if (selectedPath is null) return;
 
         _fileInspectionCancellation?.Cancel();
         _fileInspectionCancellation?.Dispose();
         var cancellation = new CancellationTokenSource();
         _fileInspectionCancellation = cancellation;
-        ChooseFileForInspectionButton.IsEnabled = false;
+        SetFileInspectionActionsEnabled(false);
         RenderFileInspection(FileFingerprintInspectionPresentation.InProgress());
         try
         {
-            var result = await _fileFingerprintInspector.InspectAsync(picker.FileName, cancellation.Token);
+            var result = await _fileFingerprintInspector.InspectAsync(selectedPath, cancellation.Token);
             if (!cancellation.IsCancellationRequested)
                 RenderFileInspection(FileFingerprintInspectionPresentation.Create(result));
         }
@@ -583,7 +612,35 @@ public partial class MainWindow : Window
         finally
         {
             if (ReferenceEquals(_fileInspectionCancellation, cancellation))
-                ChooseFileForInspectionButton.IsEnabled = true;
+                SetFileInspectionActionsEnabled(true);
+        }
+    }
+
+    private async void ChooseFileForPublisherInspectionClicked(object sender, RoutedEventArgs e)
+    {
+        var selectedPath = ChooseLocalFile("Choose a file for embedded Authenticode publisher inspection");
+        if (selectedPath is null) return;
+
+        _publisherInspectionCancellation?.Cancel();
+        _publisherInspectionCancellation?.Dispose();
+        var cancellation = new CancellationTokenSource();
+        _publisherInspectionCancellation = cancellation;
+        SetFileInspectionActionsEnabled(false);
+        RenderPublisherInspection(AuthenticodePublisherInspectionPresentation.InProgress());
+        try
+        {
+            var result = await _authenticodePublisherInspector.InspectAsync(selectedPath, cancellation.Token);
+            if (!cancellation.IsCancellationRequested)
+                RenderPublisherInspection(AuthenticodePublisherInspectionPresentation.Create(result));
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            RenderPublisherInspection(AuthenticodePublisherInspectionPresentation.Cancelled());
+        }
+        finally
+        {
+            if (ReferenceEquals(_publisherInspectionCancellation, cancellation))
+                SetFileInspectionActionsEnabled(true);
         }
     }
 
