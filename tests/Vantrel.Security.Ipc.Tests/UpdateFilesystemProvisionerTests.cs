@@ -67,6 +67,7 @@ public sealed class UpdateFilesystemProvisionerTests
             AssertDirectory(paths.BackupsRoot, UpdateDirectoryRole.BackupsRoot);
             AssertDirectory(paths.FixedBackupRoot, UpdateDirectoryRole.FixedBackupDirectory);
             AssertDirectory(paths.ReleasePolicyRoot, UpdateDirectoryRole.ReleasePolicyRoot);
+            Assert.IsTrue(UpdateFilesystemSecurity.ValidateProvisionedMutableFileOnDisk(new FileInfo(paths.OwnerLockFile)).IsMatch);
             Assert.IsTrue(UpdateFilesystemSecurity.ValidateProvisionedMutableFileOnDisk(new FileInfo(paths.JournalFile)).IsMatch);
             Assert.IsTrue(UpdateFilesystemSecurity.ValidateProvisionedMutableFileOnDisk(new FileInfo(paths.PolicyFile)).IsMatch);
         }

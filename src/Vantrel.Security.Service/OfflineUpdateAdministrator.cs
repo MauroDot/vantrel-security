@@ -10,22 +10,31 @@ public sealed class OfflineUpdateAdministrator
     private static readonly SemaphoreSlim ProductionGate = new(1, 1);
     private readonly Func<CancellationToken, Task<UpdateTransactionPhase>> _fixedOperation;
     private readonly SemaphoreSlim _gate;
+    private readonly IOfflineUpdateOwnershipLock? _ownershipLock;
 
-    public OfflineUpdateAdministrator() : this(ExecuteFixedAsync, ProductionGate) { }
-    internal OfflineUpdateAdministrator(Func<CancellationToken, Task<UpdateTransactionPhase>> fixedOperation, SemaphoreSlim? gate = null)
+    public OfflineUpdateAdministrator() : this(ExecuteFixedAsync, ProductionGate, new OfflineUpdateOwnershipLock()) { }
+    internal OfflineUpdateAdministrator(Func<CancellationToken, Task<UpdateTransactionPhase>> fixedOperation, SemaphoreSlim? gate = null,
+        IOfflineUpdateOwnershipLock? ownershipLock = null)
     {
         _fixedOperation = fixedOperation ?? throw new ArgumentNullException(nameof(fixedOperation));
         _gate = gate ?? ProductionGate;
+        _ownershipLock = ownershipLock;
     }
 
     public async Task<OfflineUpdateInvocationResult> ApplyFixedStagedCandidateAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         if (!_gate.Wait(0)) return OfflineUpdateInvocationResult.AlreadyInProgress;
-        try { return await _fixedOperation(token) == UpdateTransactionPhase.Completed ? OfflineUpdateInvocationResult.Completed : OfflineUpdateInvocationResult.Failed; }
+        IDisposable? ownership = null;
+        try
+        {
+            ownership = _ownershipLock?.TryAcquire(token);
+            if (_ownershipLock is not null && ownership is null) return OfflineUpdateInvocationResult.AlreadyInProgress;
+            return await _fixedOperation(token) == UpdateTransactionPhase.Completed ? OfflineUpdateInvocationResult.Completed : OfflineUpdateInvocationResult.Failed;
+        }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch { return OfflineUpdateInvocationResult.Failed; }
-        finally { _gate.Release(); }
+        finally { ownership?.Dispose(); _gate.Release(); }
     }
     private static async Task<UpdateTransactionPhase> ExecuteFixedAsync(CancellationToken token)
     {

@@ -178,6 +178,7 @@ public sealed class UpdateFilesystemSecurityTests
         {
             fixture = provisioner.ProvisionDisposableFixture(TransactionId, BackupId);
             AssertStructuralDirectories(fixture);
+            Assert.IsTrue(UpdateFilesystemSecurity.ValidateProvisionedMutableFileOnDisk(new FileInfo(fixture.OwnerLockFile)).IsMatch);
             Assert.IsTrue(UpdateFilesystemSecurity.ValidateProvisionedMutableFileOnDisk(new FileInfo(fixture.JournalFile)).IsMatch);
             Assert.IsTrue(UpdateFilesystemSecurity.ValidateProvisionedMutableFileOnDisk(new FileInfo(fixture.PolicyFile)).IsMatch);
 
@@ -556,7 +557,8 @@ public sealed class UpdateFilesystemSecurityTests
     private static void AssertFixtureInventory(ProvisionedUpdateFilesystem fixture, bool includeInheritanceObjects)
     {
         AssertExactChildren(fixture.ProductRoot, fixture.ProductRoot, ("Updates", true), ("ReleasePolicy", true));
-        AssertExactChildren(fixture.ProductRoot, fixture.UpdatesRoot, ("Transactions", true), ("Backups", true));
+        AssertExactChildren(fixture.ProductRoot, fixture.UpdatesRoot, ("Transactions", true), ("Backups", true),
+            (UpdateTransactionJournalStore.LockFileName, false), (OfflineUpdateOwnershipLock.OwnerLockFileName, false));
         AssertExactChildren(fixture.ProductRoot, fixture.TransactionsRoot,
             includeInheritanceObjects
                 ? [(TransactionId, true), (UpdateTransactionJournalStore.JournalFileName, false),
