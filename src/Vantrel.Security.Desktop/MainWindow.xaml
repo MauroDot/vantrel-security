@@ -262,6 +262,16 @@
                         <TextBlock x:Name="ProtectionUpdateText" TextWrapping="Wrap" Margin="0,8,0,0"/>
                     </StackPanel>
                 </Border>
+                <Border x:Name="NetworkPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14"
+                        Padding="26" BorderBrush="#29415B" BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock Text="WINDOWS FIREWALL PROFILE OBSERVATIONS" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="NetworkFirewallProfileNoticeText" TextWrapping="Wrap" Margin="0,10,0,12"/>
+                        <TextBlock x:Name="NetworkFirewallProfileStateText" TextWrapping="Wrap"
+                                   automation:AutomationProperties.LiveSetting="Polite" Margin="0,0,0,12"/>
+                        <ItemsControl x:Name="NetworkFirewallProfileEntries"/>
+                    </StackPanel>
+                </Border>
                 <Border x:Name="SystemHealthPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14"
                         Padding="26" BorderBrush="#29415B" BorderThickness="1">
                     <StackPanel>

@@ -24,12 +24,18 @@ public sealed class DesktopSectionNavigationTests
     }
 
     [DataTestMethod]
-    [DataRow("Network")]
     [DataRow("Quarantine")]
     [DataRow("Settings")]
     public void Existing_future_sections_remain_placeholders_without_status_refresh(string section)
     {
         Assert.IsFalse(DesktopSectionNavigation.IsWorkspace(section));
         Assert.IsFalse(DesktopSectionNavigation.RequiresStatusRefresh(section));
+    }
+
+    [TestMethod]
+    public void Network_is_a_local_workspace_without_a_service_status_refresh()
+    {
+        Assert.IsTrue(DesktopSectionNavigation.IsWorkspace("Network"));
+        Assert.IsFalse(DesktopSectionNavigation.RequiresStatusRefresh("Network"));
     }
 }

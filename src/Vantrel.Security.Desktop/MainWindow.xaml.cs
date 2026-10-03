@@ -23,6 +23,8 @@ public partial class MainWindow : Window
     private readonly ITrustedManifestRefreshCommandClient _trustedManifestRefreshCommandClient;
     private readonly IWindowsSecurityProviderInventorySource _providerInventorySource = new WindowsSecurityProviderInventorySource();
     private readonly ProtectionProviderInventorySession _providerInventorySession = new();
+    private readonly IWindowsFirewallProfileObservationSource _firewallProfileObservationSource = new WindowsFirewallProfileObservationSource();
+    private readonly NetworkFirewallProfileObservationSession _firewallProfileObservationSession = new();
     private readonly ILogger<MainWindow> _logger;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private CancellationTokenSource? _refreshCancellation;
@@ -81,6 +83,7 @@ public partial class MainWindow : Window
         RenderPublisherInspection(AuthenticodePublisherInspectionPresentation.Initial());
         RenderWindowsSignatureInspection(WindowsSignatureInspectionPresentation.Initial());
         RenderProtectionProviderInventory(WindowsSecurityProviderInventoryPresentation.Initial());
+        RenderNetworkFirewallProfiles(WindowsFirewallProfileObservationPresentation.Initial());
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
         _refreshTimer.Tick += async (_, _) => await RefreshStatusAsync();
         Loaded += async (_, _) =>
@@ -99,11 +102,14 @@ public partial class MainWindow : Window
             _publisherInspectionCancellation?.Cancel();
             _windowsSignatureInspectionCancellation?.Cancel();
             _providerInventorySession.Clear();
+            _firewallProfileObservationSession.Clear();
         };
     }
 
     private async Task RefreshStatusAsync()
     {
+        RenderNetworkFirewallProfiles(WindowsFirewallProfileObservationPresentation.Create(
+            _firewallProfileObservationSession.Snapshot, DateTimeOffset.UtcNow));
         _refreshCancellation?.Cancel();
         _refreshCancellation?.Dispose();
         var cancellation = new CancellationTokenSource();
@@ -333,6 +339,26 @@ public partial class MainWindow : Window
         var snapshot = await _providerInventorySession.OpenAsync(_providerInventorySource);
         if (snapshot is not null && _providerInventorySession.IsCurrent(snapshot))
             RenderProtectionProviderInventory(WindowsSecurityProviderInventoryPresentation.Create(snapshot, DateTimeOffset.UtcNow));
+    }
+
+    private void RenderNetworkFirewallProfiles(WindowsFirewallProfileObservationPresentation presentation)
+    {
+        NetworkFirewallProfileNoticeText.Text = presentation.NoticeText;
+        NetworkFirewallProfileStateText.Text = presentation.StateText;
+        NetworkFirewallProfileEntries.ItemsSource = presentation.ProfileText;
+    }
+
+    private void OpenNetworkFirewallProfiles()
+    {
+        RenderNetworkFirewallProfiles(WindowsFirewallProfileObservationPresentation.Initial());
+        _ = CollectNetworkFirewallProfilesAsync();
+    }
+
+    private async Task CollectNetworkFirewallProfilesAsync()
+    {
+        var snapshot = await _firewallProfileObservationSession.OpenAsync(_firewallProfileObservationSource);
+        if (snapshot is not null && _firewallProfileObservationSession.IsCurrent(snapshot))
+            RenderNetworkFirewallProfiles(WindowsFirewallProfileObservationPresentation.Create(snapshot, DateTimeOffset.UtcNow));
     }
 
     private void RenderIntegrityRefreshAudit(IntegrityRefreshAuditSnapshot? audit, bool connected)
@@ -834,6 +860,16 @@ public partial class MainWindow : Window
         {
             _providerInventorySession.Clear();
             RenderProtectionProviderInventory(WindowsSecurityProviderInventoryPresentation.Initial());
+        }
+        NetworkPanel.Visibility = section == "Network" ? Visibility.Visible : Visibility.Collapsed;
+        if (section == "Network")
+        {
+            OpenNetworkFirewallProfiles();
+        }
+        else
+        {
+            _firewallProfileObservationSession.Clear();
+            RenderNetworkFirewallProfiles(WindowsFirewallProfileObservationPresentation.Initial());
         }
         SystemHealthPanel.Visibility = section == "System Health" ? Visibility.Visible : Visibility.Collapsed;
         ActivityPanel.Visibility = section == "Activity" ? Visibility.Visible : Visibility.Collapsed;
