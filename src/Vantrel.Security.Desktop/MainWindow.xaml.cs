@@ -127,6 +127,9 @@ public partial class MainWindow : Window
                     await _scanCapabilityClient.GetScanCapabilityAsync(cancellation.Token);
                 if (cancellation.IsCancellationRequested) return;
                 RenderScanCapability(capability, status is not null);
+            }
+            if (InstallationPanel.Visibility == Visibility.Visible)
+            {
                 var inspection = status is null ? null : await _componentInspectionClient.GetComponentInspectionAsync(cancellation.Token);
                 if (cancellation.IsCancellationRequested) return;
                 RenderComponentInspection(inspection, status is not null);
@@ -174,12 +177,12 @@ public partial class MainWindow : Window
             if (ActivityPanel.Visibility == Visibility.Visible) RenderActivity(null, false);
             _scanWasDisconnected = true;
             if (ScanPanel.Visibility == Visibility.Visible) RenderScanCapability(null, false);
-            if (ScanPanel.Visibility == Visibility.Visible) RenderComponentInspection(null, false);
-            if (ScanPanel.Visibility == Visibility.Visible) RenderComponentIntegrity(null, false);
-            if (ScanPanel.Visibility == Visibility.Visible) RenderTrustedManifestIntegrity(null, false);
-            if (ScanPanel.Visibility == Visibility.Visible) RenderReleaseProvenance(null, false);
-            if (ScanPanel.Visibility == Visibility.Visible) RenderIntegrityRefreshAudit(null, false);
-            if (ScanPanel.Visibility == Visibility.Visible) RenderTrustedManifestIntegrityHistory(null, false);
+            if (InstallationPanel.Visibility == Visibility.Visible) RenderComponentInspection(null, false);
+            if (InstallationPanel.Visibility == Visibility.Visible) RenderComponentIntegrity(null, false);
+            if (InstallationPanel.Visibility == Visibility.Visible) RenderTrustedManifestIntegrity(null, false);
+            if (InstallationPanel.Visibility == Visibility.Visible) RenderReleaseProvenance(null, false);
+            if (InstallationPanel.Visibility == Visibility.Visible) RenderIntegrityRefreshAudit(null, false);
+            if (InstallationPanel.Visibility == Visibility.Visible) RenderTrustedManifestIntegrityHistory(null, false);
             if (_trustedManifestRefresh.IsInFlight)
             {
                 _trustedManifestRefreshCancellation?.Cancel();
@@ -503,10 +506,11 @@ public partial class MainWindow : Window
         SectionTitle.Text = section;
         DashboardPanel.Visibility = section == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
         ScanPanel.Visibility = section == "Scan" ? Visibility.Visible : Visibility.Collapsed;
+        InstallationPanel.Visibility = section == "Installation" ? Visibility.Visible : Visibility.Collapsed;
         SystemHealthPanel.Visibility = section == "System Health" ? Visibility.Visible : Visibility.Collapsed;
         ActivityPanel.Visibility = section == "Activity" ? Visibility.Visible : Visibility.Collapsed;
-        PlaceholderPanel.Visibility = section is "Dashboard" or "Scan" or "System Health" or "Activity" ? Visibility.Collapsed : Visibility.Visible;
+        PlaceholderPanel.Visibility = DesktopSectionNavigation.IsWorkspace(section) ? Visibility.Collapsed : Visibility.Visible;
         PlaceholderText.Text = $"{section} will be available in a future release.";
-        if (section is "Scan" or "System Health" or "Activity") await RefreshStatusAsync();
+        if (DesktopSectionNavigation.RequiresStatusRefresh(section)) await RefreshStatusAsync();
     }
 }
