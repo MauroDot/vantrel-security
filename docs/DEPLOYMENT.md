@@ -41,6 +41,12 @@ After a transaction reaches `Completed`, `RolledBack`, or `Failed`, a later elev
 
 The stopped-service check immediately before restore is point-in-time; it is not continuous exclusion against an independently authorized SCM start during the nine-file replacement sequence. The fixed-file replacement is not release-wide atomic. Recovery and cryptographic verification prevent the product from accepting a mixed release.
 
+## Desktop workspaces
+
+The Desktop Installation workspace presents signed installation integrity, release provenance and local policy, offline-update transaction and recovery state, integrity-refresh activity, and signed installation-integrity history. Refresh integrity is available only in Installation.
+
+The Scan workspace states that Vantrel scanning, detection, and remediation are unavailable. Its Open Windows Security button is an external Windows handoff only: Vantrel does not request, monitor, interpret, or report Windows Security scans.
+
 Unsigned development builds and the direct manual service commands in [SERVICE-MANUAL.md](SERVICE-MANUAL.md) are for local validation only. Do not disable SmartScreen, weaken signature checks, or change PowerShell execution policy to run this build. Task 003 did not create a certificate, installer, or updater.
 
 ## Installed-service validation passed

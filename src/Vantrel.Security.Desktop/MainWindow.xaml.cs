@@ -123,7 +123,7 @@ public partial class MainWindow : Window
             _statusConnected = status is not null;
             ServiceStatusText.Text = status is null ? "Disconnected" : "Connected";
             ServiceVersionText.Text = status is null ? "Service version: —" : $"Service version: {status.Version}";
-            ProtectionStatusText.Text = status?.Protection == ProtectionState.Protected ? "Protected" : "Unavailable";
+            ProtectionStatusText.Text = DashboardProtectionPresentation.Create(status?.Protection).StateText;
             HeartbeatText.Text = status is null
                 ? "Heartbeat unavailable until the status connection succeeds."
                 : $"Last heartbeat: {status.HeartbeatAtUtc.ToLocalTime():g}  ·  Uptime: {status.UptimeAt(DateTimeOffset.UtcNow):hh\\:mm\\:ss}";
@@ -218,7 +218,7 @@ public partial class MainWindow : Window
             ServiceStatusText.Text = "Disconnected";
             _statusConnected = false;
             ServiceVersionText.Text = "Service version: —";
-            ProtectionStatusText.Text = "Unavailable";
+            ProtectionStatusText.Text = DashboardProtectionPresentation.Create(null).StateText;
             HeartbeatText.Text = "Status could not be read.";
             ServiceDiagnosticText.Text = $"Connection detail: UnexpectedFailure at DesktopRefresh; exception={error.GetType().FullName}; HRESULT={error.HResult:X8}";
             ServiceDiagnosticText.Visibility = Visibility.Visible;
