@@ -23,11 +23,23 @@ dotnet --list-runtimes
 ## Trusted release model
 
 1. Build from a reviewed source revision on a controlled build machine with a current supported SDK. Keep build outputs and private signing material out of Git.
-2. Sign the service executable and desktop executable with a trusted commercial Authenticode code-signing certificate. Sign any future installer, updater, or privileged executable before distribution. Sign PowerShell management scripts if they are distributed for use under `AllSigned` policy. There is no installer or updater in this task.
+2. Sign the service executable and desktop executable with a trusted commercial Authenticode code-signing certificate. Sign any installer, updater, or privileged executable before distribution. Sign PowerShell management scripts if they are distributed for use under `AllSigned` policy.
 3. Verify Authenticode signatures and publisher identity on the final artifacts, record SHA-256 hashes, and distribute through a trusted channel. The certificate private key belongs in a protected signing service or hardware-backed store, never in the repository or on end-user machines.
 4. Install the service under Administrator control into `Program Files\Vantrel Security\Service`, with SYSTEM and Administrators owning changes and LocalService receiving read/execute. Register the Event Log source, create the service as `NT AUTHORITY\LocalService` with manual startup, and validate its binary path and account through Service Control Manager.
 5. Keep the WPF desktop non-elevated. It reads status over the local named pipe and checks SCM state. The pipe does not accept privileged commands. Windows Application Event Log holds installed-service lifecycle and error events.
-6. On update, stop the service, verify the new signed payload, replace it using an Administrator-controlled process, and restart only after verifying the installation. A production updater and rollback procedure are future work.
+6. Use the implemented Administrator-operated offline update workflow for a signed release. It verifies and recovers the fixed release transaction as described below; it is not a manual file-replacement procedure.
+
+## Offline update operations
+
+The implemented offline update workflow accepts only signed offline release artifacts whose fixed-file manifest authenticates the complete release. It revalidates the staged candidate, copies it into private transaction storage, and independently verifies that copy before replacement. It also creates and cryptographically reauthenticates the immediate-predecessor backup, bound to the durable transaction journal and predecessor policy before rollback can restore it.
+
+The durable journal drives recovery after interruption. A rollback restart is permitted only through a cryptographically random, one-time authorization nonce issued after authenticated restoration; the service consumes that authorization before normal workers start. Normal service startup is denied while rollback remains unresolved, except for that exact authorized recovery handoff.
+
+After a transaction reaches `Completed`, `RolledBack`, or `Failed`, a later elevated operation may retire only the journal-bound private candidate and predecessor-backup artifacts. It removes the terminal journal last, allowing a later update to reach fresh admission while preserving unrelated staging, policy, and lock infrastructure.
+
+### Operational limits
+
+The stopped-service check immediately before restore is point-in-time; it is not continuous exclusion against an independently authorized SCM start during the nine-file replacement sequence. The fixed-file replacement is not release-wide atomic. Recovery and cryptographic verification prevent the product from accepting a mixed release.
 
 Unsigned development builds and the direct manual service commands in [SERVICE-MANUAL.md](SERVICE-MANUAL.md) are for local validation only. Do not disable SmartScreen, weaken signature checks, or change PowerShell execution policy to run this build. Task 003 did not create a certificate, installer, or updater.
 
