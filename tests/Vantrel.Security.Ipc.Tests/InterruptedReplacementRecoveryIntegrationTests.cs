@@ -34,7 +34,13 @@ public sealed class InterruptedReplacementRecoveryIntegrationTests
         Assert.AreEqual(1, files.RestoreCalls);
         Assert.AreEqual(1, service.StartCalls);
         Assert.AreEqual(1, health.PredecessorHealthCalls);
-        CollectionAssert.AreEqual(new[] { UpdateTransactionPhase.RollbackRequired, UpdateTransactionPhase.RolledBack }, journalStore.Phases);
+        CollectionAssert.AreEqual(new[]
+        {
+            UpdateTransactionPhase.RollbackRequired,
+            UpdateTransactionPhase.RollbackRestartAuthorized,
+            UpdateTransactionPhase.RollbackRestartConsumed,
+            UpdateTransactionPhase.RolledBack
+        }, journalStore.Phases);
         Assert.AreEqual(1UL, health.PolicySequence);
 
         Assert.AreEqual(UpdateTransactionPhase.RolledBack, await engine.RecoverAsync(journal with { Phase = UpdateTransactionPhase.RolledBack }, CancellationToken.None));

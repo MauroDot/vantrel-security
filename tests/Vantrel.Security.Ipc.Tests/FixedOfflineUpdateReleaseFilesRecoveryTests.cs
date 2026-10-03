@@ -18,7 +18,13 @@ public sealed class FixedOfflineUpdateReleaseFilesRecoveryTests
         Assert.AreEqual(1, fixture.Service.StartCount);
         Assert.AreEqual(1, fixture.Health.PredecessorVerificationCount);
         Assert.AreEqual(1UL, (await fixture.Verifier.VerifyChainAsync(fixture.Installed, CancellationToken.None)).Sequence);
-        CollectionAssert.AreEqual(new[] { UpdateTransactionPhase.RollbackRequired, UpdateTransactionPhase.RolledBack }, fixture.Journal.Phases);
+        CollectionAssert.AreEqual(new[]
+        {
+            UpdateTransactionPhase.RollbackRequired,
+            UpdateTransactionPhase.RollbackRestartAuthorized,
+            UpdateTransactionPhase.RollbackRestartConsumed,
+            UpdateTransactionPhase.RolledBack
+        }, fixture.Journal.Phases);
     }
 
     [DataTestMethod]
