@@ -40,8 +40,10 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _trustedManifestRefreshCancellation;
     private readonly LocalFileInspectionCoordinator _fileInspectionCoordinator = new();
     private readonly LocalFileFingerprintInspector _fileFingerprintInspector;
+    private readonly LocalFileFingerprintComparisonInspector _fileFingerprintComparisonInspector;
     private readonly AuthenticodePublisherInspector _authenticodePublisherInspector;
     private CancellationTokenSource? _fileInspectionCancellation;
+    private CancellationTokenSource? _fileComparisonCancellation;
     private CancellationTokenSource? _publisherInspectionCancellation;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
@@ -62,9 +64,11 @@ public partial class MainWindow : Window
         _trustedManifestRefreshCommandClient = trustedManifestRefreshCommandClient;
         _logger = logger;
         _fileFingerprintInspector = new LocalFileFingerprintInspector(coordinator: _fileInspectionCoordinator);
+        _fileFingerprintComparisonInspector = new LocalFileFingerprintComparisonInspector(_fileInspectionCoordinator);
         _authenticodePublisherInspector = new AuthenticodePublisherInspector(coordinator: _fileInspectionCoordinator);
         InitializeComponent();
         RenderFileInspection(FileFingerprintInspectionPresentation.Initial());
+        RenderFileFingerprintComparison(FileFingerprintComparisonPresentation.Initial());
         RenderPublisherInspection(AuthenticodePublisherInspectionPresentation.Initial());
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
         _refreshTimer.Tick += async (_, _) => await RefreshStatusAsync();
@@ -79,6 +83,7 @@ public partial class MainWindow : Window
             _refreshCancellation?.Cancel();
             _trustedManifestRefreshCancellation?.Cancel();
             _fileInspectionCancellation?.Cancel();
+            _fileComparisonCancellation?.Cancel();
             _publisherInspectionCancellation?.Cancel();
         };
     }
@@ -571,6 +576,12 @@ public partial class MainWindow : Window
         PublisherInspectionSignerText.Text = presentation.DeclaredSignerSubject ?? "No declared embedded signer subject was available.";
     }
 
+    private void RenderFileFingerprintComparison(FileFingerprintComparisonPresentation presentation)
+    {
+        FileComparisonNoticeText.Text = presentation.NoticeText;
+        FileComparisonStateText.Text = presentation.StateText;
+    }
+
     private string? ChooseLocalFile(string title)
     {
         var picker = new Microsoft.Win32.OpenFileDialog
@@ -585,6 +596,7 @@ public partial class MainWindow : Window
     private void SetFileInspectionActionsEnabled(bool enabled)
     {
         ChooseFileForInspectionButton.IsEnabled = enabled;
+        ChooseFileForComparisonButton.IsEnabled = enabled;
         ChooseFileForPublisherInspectionButton.IsEnabled = enabled;
     }
 
@@ -640,6 +652,43 @@ public partial class MainWindow : Window
         finally
         {
             if (ReferenceEquals(_publisherInspectionCancellation, cancellation))
+                SetFileInspectionActionsEnabled(true);
+        }
+    }
+
+    private async void ChooseFileForComparisonClicked(object sender, RoutedEventArgs e)
+    {
+        if (!ExpectedSha256Value.TryParse(ExpectedSha256TextBox.Text, out var expected))
+        {
+            RenderFileFingerprintComparison(FileFingerprintComparisonPresentation.Create(
+                FileFingerprintComparisonResult.From(FileFingerprintComparisonOutcome.InvalidExpectedValue)));
+            return;
+        }
+
+        var selectedPath = ChooseLocalFile("Choose a file for SHA-256 comparison");
+        if (selectedPath is null) return;
+
+        // The input is used only by this operation and is never rendered in its result.
+        ExpectedSha256TextBox.Clear();
+        _fileComparisonCancellation?.Cancel();
+        _fileComparisonCancellation?.Dispose();
+        var cancellation = new CancellationTokenSource();
+        _fileComparisonCancellation = cancellation;
+        SetFileInspectionActionsEnabled(false);
+        RenderFileFingerprintComparison(FileFingerprintComparisonPresentation.InProgress());
+        try
+        {
+            var result = await _fileFingerprintComparisonInspector.CompareAsync(selectedPath, expected, cancellation.Token);
+            if (!cancellation.IsCancellationRequested)
+                RenderFileFingerprintComparison(FileFingerprintComparisonPresentation.Create(result));
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            RenderFileFingerprintComparison(FileFingerprintComparisonPresentation.Cancelled());
+        }
+        finally
+        {
+            if (ReferenceEquals(_fileComparisonCancellation, cancellation))
                 SetFileInspectionActionsEnabled(true);
         }
     }

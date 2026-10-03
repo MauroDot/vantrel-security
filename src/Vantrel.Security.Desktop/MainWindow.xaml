@@ -1,6 +1,7 @@
 <Window x:Class="Vantrel.Security.Desktop.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:automation="clr-namespace:System.Windows.Automation;assembly=PresentationCore"
         Title="{StaticResource ProductName}" Width="1040" Height="680" MinWidth="850" MinHeight="560"
         Background="#0B1220" Foreground="#EAF1FA" WindowStartupLocation="CenterScreen">
     <Window.Resources>
@@ -184,6 +185,16 @@
                             <TextBlock Text="SHA-256 FINGERPRINT" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
                             <TextBlock x:Name="FileInspectionFingerprintText" TextWrapping="Wrap" Margin="0,6,0,0"/>
                         </StackPanel>
+                        <Separator Margin="0,20,0,16"/>
+                        <TextBlock Text="SHA-256 COMPARISON" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="FileComparisonNoticeText" TextWrapping="Wrap" Margin="0,10,0,12"/>
+                        <Label Content="Expected SHA-256 value" Target="{Binding ElementName=ExpectedSha256TextBox}" Padding="0"/>
+                        <TextBox x:Name="ExpectedSha256TextBox" MaxLength="64" Width="460" HorizontalAlignment="Left"
+                                 automation:AutomationProperties.Name="Expected SHA-256 value" Margin="0,4,0,12"/>
+                        <Button x:Name="ChooseFileForComparisonButton" Content="Choose file and compare" Click="ChooseFileForComparisonClicked"
+                                Padding="14,7" HorizontalAlignment="Left" Margin="0,0,0,12"/>
+                        <TextBlock x:Name="FileComparisonStateText" TextWrapping="Wrap"
+                                   automation:AutomationProperties.LiveSetting="Polite" Margin="0,0,0,0"/>
                         <Separator Margin="0,20,0,16"/>
                         <TextBlock Text="EMBEDDED AUTHENTICODE PUBLISHER INSPECTION" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
                         <TextBlock x:Name="PublisherInspectionNoticeText" TextWrapping="Wrap" Margin="0,10,0,14"/>
