@@ -5,6 +5,7 @@ using Vantrel.Security.Core;
 namespace Vantrel.Security.Service;
 
 internal enum JournalReadState { Present, Absent, MissingInfrastructure, Invalid }
+internal enum PostVerifiedPolicyHandoffResult { Completed, NotEligible }
 
 internal sealed record JournalReadResult(UpdateTransactionJournal? Journal,
     UpdateTransactionJournalParseFailure Failure, JournalReadState State)
@@ -104,6 +105,40 @@ public sealed class UpdateTransactionJournalStore
         finally { _gate.Release(); }
     }
 
+    /// <summary>
+    /// Serializes the LocalService policy handoff with every elevated journal transition.
+    /// The callback is reached only for the exact still-post-verified transaction and
+    /// remains inside the mandatory journal lock through its durable policy decision.
+    /// </summary>
+    internal async Task<PostVerifiedPolicyHandoffResult> TryCompletePostVerifiedPolicyHandoffAsync(
+        UpdateTransactionJournal expected, Func<UpdateTransactionJournal, CancellationToken, Task<bool>> verifyAndCommitTargetPolicy,
+        CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        ArgumentNullException.ThrowIfNull(verifyAndCommitTargetPolicy);
+        token.ThrowIfCancellationRequested();
+        RequireProvisionedInfrastructure();
+        await using var interprocess = await AcquireInterprocessLockAsync(token);
+        await _gate.WaitAsync(token);
+        try
+        {
+            if (!File.Exists(_journalPath)) return PostVerifiedPolicyHandoffResult.NotEligible;
+            RejectReparse(_journalPath);
+            var bytes = await File.ReadAllBytesAsync(_journalPath, token);
+            if (!UpdateTransactionJournalCodec.TryParse(bytes, out var current, out var failure) || current is null)
+                throw new IOException("Existing update transaction journal is invalid: " + failure);
+            if (current.Phase != UpdateTransactionPhase.PostVerified || expected.Phase != UpdateTransactionPhase.PostVerified ||
+                !HasSameImmutableIdentity(current, expected))
+                return PostVerifiedPolicyHandoffResult.NotEligible;
+            if (!await verifyAndCommitTargetPolicy(current, token)) return PostVerifiedPolicyHandoffResult.NotEligible;
+            var now = DateTimeOffset.UtcNow;
+            now = new DateTimeOffset(now.Ticks - now.Ticks % TimeSpan.TicksPerSecond, TimeSpan.Zero);
+            await PersistLockedAsync(UpdateTransactionStateMachine.Transition(current, UpdateTransactionPhase.PolicyCommitted, now), token);
+            return PostVerifiedPolicyHandoffResult.Completed;
+        }
+        finally { _gate.Release(); }
+    }
+
     /// <summary>Consumes the one fixed recovery-start capability before any hosted worker is admitted.</summary>
     internal async Task<bool> TryConsumeRecoveryStartAsync(string? nonce, CancellationToken token)
         => await TryConsumeRecoveryStartLeaseAsync(nonce, token) is not null;
@@ -192,9 +227,7 @@ public sealed class UpdateTransactionJournalStore
             var existingBytes = await File.ReadAllBytesAsync(_journalPath, token);
             if (!UpdateTransactionJournalCodec.TryParse(existingBytes, out var existing, out var failure) || existing is null)
                 throw new IOException("Existing update transaction journal is invalid: " + failure);
-            if (existing.TransactionId != journal.TransactionId || existing.BackupId != journal.BackupId ||
-                existing.PriorReleaseSequence != journal.PriorReleaseSequence || existing.PriorManifestSha256 != journal.PriorManifestSha256 ||
-                existing.TargetReleaseSequence != journal.TargetReleaseSequence || existing.TargetManifestSha256 != journal.TargetManifestSha256 ||
+            if (!HasSameImmutableIdentity(existing, journal) ||
                 (existing.RecoveryStartNonce != journal.RecoveryStartNonce && !((existing.Phase == UpdateTransactionPhase.RollbackRequired && existing.RecoveryStartNonce is null && journal.Phase == UpdateTransactionPhase.RollbackRestartAuthorized && UpdateTransactionJournalCodec.IsNonce(journal.RecoveryStartNonce)) || (existing.Phase == UpdateTransactionPhase.RollbackRestartAuthorized && journal.RecoveryStartNonce is null && journal.Phase is UpdateTransactionPhase.RollbackRestartConsumed or UpdateTransactionPhase.RollbackRequired))) ||
                 (existing.Phase != journal.Phase && !UpdateTransactionStateMachine.CanTransition(existing.Phase, journal.Phase)))
                 throw new InvalidOperationException("Illegal update transaction journal mutation.");
@@ -215,6 +248,11 @@ public sealed class UpdateTransactionJournalStore
         }
         finally { if (File.Exists(temporary)) { try { RejectReparse(temporary); File.Delete(temporary); } catch { } } }
     }
+
+    private static bool HasSameImmutableIdentity(UpdateTransactionJournal left, UpdateTransactionJournal right) =>
+        left.TransactionId == right.TransactionId && left.BackupId == right.BackupId &&
+        left.PriorReleaseSequence == right.PriorReleaseSequence && left.PriorManifestSha256 == right.PriorManifestSha256 &&
+        left.TargetReleaseSequence == right.TargetReleaseSequence && left.TargetManifestSha256 == right.TargetManifestSha256;
     private static void ApplyDirectoryAcl(string path)
     {
         if (!OperatingSystem.IsWindows()) return;
