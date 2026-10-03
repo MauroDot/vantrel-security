@@ -14,6 +14,15 @@ public sealed class DesktopSectionNavigationTests
         Assert.IsTrue(DesktopSectionNavigation.RequiresStatusRefresh("Protection"));
     }
 
+    [TestMethod]
+    public void File_inspection_is_a_local_workspace_without_a_service_status_refresh()
+    {
+        Assert.IsTrue(DesktopSectionNavigation.IsWorkspace("File inspection"));
+        Assert.IsFalse(DesktopSectionNavigation.RequiresStatusRefresh("File inspection"));
+        Assert.IsTrue(DesktopSectionNavigation.IsWorkspace("Scan"));
+        Assert.IsTrue(DesktopSectionNavigation.RequiresStatusRefresh("Scan"));
+    }
+
     [DataTestMethod]
     [DataRow("Network")]
     [DataRow("Quarantine")]

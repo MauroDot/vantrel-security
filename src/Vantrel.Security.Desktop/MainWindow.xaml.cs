@@ -38,6 +38,8 @@ public partial class MainWindow : Window
     private TrustedManifestIntegritySnapshot? _lastTrustedManifestSnapshot;
     private readonly TrustedManifestRefreshRequestState _trustedManifestRefresh = new();
     private CancellationTokenSource? _trustedManifestRefreshCancellation;
+    private readonly LocalFileFingerprintInspector _fileFingerprintInspector = new();
+    private CancellationTokenSource? _fileInspectionCancellation;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
         IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient, ITrustedManifestIntegrityClient trustedManifestIntegrityClient, IIntegrityRefreshAuditClient integrityRefreshAuditClient, ITrustedManifestIntegrityHistoryClient trustedManifestIntegrityHistoryClient, IReleaseProvenanceClient releaseProvenanceClient, ITrustedManifestRefreshCommandClient trustedManifestRefreshCommandClient,
@@ -57,6 +59,7 @@ public partial class MainWindow : Window
         _trustedManifestRefreshCommandClient = trustedManifestRefreshCommandClient;
         _logger = logger;
         InitializeComponent();
+        RenderFileInspection(FileFingerprintInspectionPresentation.Initial());
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
         _refreshTimer.Tick += async (_, _) => await RefreshStatusAsync();
         Loaded += async (_, _) =>
@@ -69,6 +72,7 @@ public partial class MainWindow : Window
             _refreshTimer.Stop();
             _refreshCancellation?.Cancel();
             _trustedManifestRefreshCancellation?.Cancel();
+            _fileInspectionCancellation?.Cancel();
         };
     }
 
@@ -540,6 +544,49 @@ public partial class MainWindow : Window
         }}";
     }
 
+    private void RenderFileInspection(FileFingerprintInspectionPresentation presentation)
+    {
+        FileInspectionNoticeText.Text = presentation.NoticeText;
+        FileInspectionStateText.Text = presentation.StateText;
+        FileInspectionResultPanel.Visibility = presentation.HasCompletedFingerprint ? Visibility.Visible : Visibility.Collapsed;
+        FileInspectionNameText.Text = presentation.FileName ?? string.Empty;
+        FileInspectionByteCountText.Text = presentation.ByteLength?.ToString("N0") ?? string.Empty;
+        FileInspectionFingerprintText.Text = presentation.Sha256 ?? string.Empty;
+    }
+
+    private async void ChooseFileForInspectionClicked(object sender, RoutedEventArgs e)
+    {
+        var picker = new Microsoft.Win32.OpenFileDialog
+        {
+            CheckFileExists = true,
+            Multiselect = false,
+            Title = "Choose a file for fingerprint inspection"
+        };
+        if (picker.ShowDialog(this) != true) return;
+
+        _fileInspectionCancellation?.Cancel();
+        _fileInspectionCancellation?.Dispose();
+        var cancellation = new CancellationTokenSource();
+        _fileInspectionCancellation = cancellation;
+        ChooseFileForInspectionButton.IsEnabled = false;
+        RenderFileInspection(FileFingerprintInspectionPresentation.InProgress());
+        try
+        {
+            var result = await _fileFingerprintInspector.InspectAsync(picker.FileName, cancellation.Token);
+            if (!cancellation.IsCancellationRequested)
+                RenderFileInspection(FileFingerprintInspectionPresentation.Create(result));
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            RenderFileInspection(FileFingerprintInspectionPresentation.Cancelled());
+        }
+        finally
+        {
+            if (ReferenceEquals(_fileInspectionCancellation, cancellation))
+                ChooseFileForInspectionButton.IsEnabled = true;
+        }
+    }
+
     private async void NavigationChanged(object sender, SelectionChangedEventArgs e)
     {
         if (SectionList.SelectedItem is not ListBoxItem item || SectionTitle is null) return;
@@ -547,6 +594,7 @@ public partial class MainWindow : Window
         SectionTitle.Text = section;
         DashboardPanel.Visibility = section == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
         ScanPanel.Visibility = section == "Scan" ? Visibility.Visible : Visibility.Collapsed;
+        FileInspectionPanel.Visibility = section == "File inspection" ? Visibility.Visible : Visibility.Collapsed;
         InstallationPanel.Visibility = section == "Installation" ? Visibility.Visible : Visibility.Collapsed;
         ProtectionPanel.Visibility = section == "Protection" ? Visibility.Visible : Visibility.Collapsed;
         SystemHealthPanel.Visibility = section == "System Health" ? Visibility.Visible : Visibility.Collapsed;

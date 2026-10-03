@@ -45,6 +45,7 @@
                 <ListBox x:Name="SectionList" Background="Transparent" BorderThickness="0" SelectedIndex="0" SelectionChanged="NavigationChanged">
                     <ListBoxItem Content="Dashboard"/>
                     <ListBoxItem Content="Scan"/>
+                    <ListBoxItem Content="File inspection"/>
                     <ListBoxItem Content="Installation"/>
                     <ListBoxItem Content="Protection"/>
                     <ListBoxItem Content="Network"/>
@@ -165,6 +166,24 @@
                         <ItemsControl x:Name="TrustedManifestHistoryEntries" Margin="0,0,0,10"/>
                         <TextBlock Text="This memory-only newest-first history exposes at most 12 completed signed-installation evaluations. Historical entries do not establish current integrity truth."
                                    Foreground="#A8B9C9" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+                <Border x:Name="FileInspectionPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14"
+                        Padding="26" BorderBrush="#29415B" BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock Text="FILE INSPECTION" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="FileInspectionNoticeText" TextWrapping="Wrap" Margin="0,10,0,14"/>
+                        <Button x:Name="ChooseFileForInspectionButton" Content="Choose file" Click="ChooseFileForInspectionClicked"
+                                Padding="14,7" HorizontalAlignment="Left" Margin="0,0,0,12"/>
+                        <TextBlock x:Name="FileInspectionStateText" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                        <StackPanel x:Name="FileInspectionResultPanel" Visibility="Collapsed">
+                            <TextBlock Text="FILE NAME" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                            <TextBlock x:Name="FileInspectionNameText" TextWrapping="Wrap" Margin="0,6,0,12"/>
+                            <TextBlock Text="BYTE COUNT" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                            <TextBlock x:Name="FileInspectionByteCountText" TextWrapping="Wrap" Margin="0,6,0,12"/>
+                            <TextBlock Text="SHA-256 FINGERPRINT" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                            <TextBlock x:Name="FileInspectionFingerprintText" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                        </StackPanel>
                     </StackPanel>
                 </Border>
                 <Border x:Name="ProtectionPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14"
