@@ -25,6 +25,7 @@ public partial class MainWindow : Window
     private readonly ProtectionProviderInventorySession _providerInventorySession = new();
     private readonly IWindowsFirewallProfileObservationSource _firewallProfileObservationSource = new WindowsFirewallProfileObservationSource();
     private readonly NetworkFirewallProfileObservationSession _firewallProfileObservationSession = new();
+    private readonly WindowsSecurityHandoff _windowsSecurityHandoff = new();
     private readonly ILogger<MainWindow> _logger;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private CancellationTokenSource? _refreshCancellation;
@@ -84,6 +85,7 @@ public partial class MainWindow : Window
         RenderWindowsSignatureInspection(WindowsSignatureInspectionPresentation.Initial());
         RenderProtectionProviderInventory(WindowsSecurityProviderInventoryPresentation.Initial());
         RenderNetworkFirewallProfiles(WindowsFirewallProfileObservationPresentation.Initial());
+        RenderWindowsSecurityHandoff(WindowsSecurityHandoffPresentation.Initial());
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
         _refreshTimer.Tick += async (_, _) => await RefreshStatusAsync();
         Loaded += async (_, _) =>
@@ -500,6 +502,15 @@ public partial class MainWindow : Window
         InspectionSampleText.Text = value is null ? "Sample: unavailable" : $"Sample: {value.SampledAtUtc.ToLocalTime():G}";
         InspectionValueText.Text = value?.Outcome == ComponentInspectionOutcome.Observed ? $"Observed SHA-256: {value.Hash} ({value.ObservedByteLength:N0} bytes)" : $"Observation: {value?.Reason.ToString() ?? "Unavailable"}";
     }
+
+    private void RenderWindowsSecurityHandoff(WindowsSecurityHandoffPresentation presentation)
+    {
+        WindowsSecurityHandoffNoticeText.Text = presentation.NoticeText;
+        WindowsSecurityHandoffStateText.Text = presentation.StateText;
+    }
+
+    private void OpenWindowsSecurityClicked(object sender, RoutedEventArgs e) =>
+        RenderWindowsSecurityHandoff(_windowsSecurityHandoff.Open());
 
     private void RenderScanCapability(ScanCapabilitySnapshot? capability, bool connected)
     {
