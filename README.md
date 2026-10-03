@@ -112,6 +112,29 @@ Task 016 adds an Administrator-operated, offline update transaction. It has no n
 
 The transaction journal is fixed under ProgramData and Status.v1 exposes only a bounded, path-free, read-only `get_update_status` snapshot. LocalService may commit the already post-verified target policy from the fixed journal, but never writes Program Files. Rollback is allowed only while durable policy remains the verified predecessor; target commitment, unreadable policy, or journal/policy disagreement fails closed and forbids automatic downgrade. Crash recovery treats `ServiceStopped` as an untrusted installed state and restores only the independently verified immediate predecessor backup.
 
+## Offline update security model
+
+Offline releases are accepted only after signed release metadata and the signed fixed-file manifest authenticate the exact nine-file release. The staged candidate is reverified, copied into private transaction storage, and independently reverified before replacement. The immediate predecessor backup is also cryptographically reauthenticated and bound to the durable journal and predecessor policy before rollback can restore it.
+
+The fixed, durable journal records preparation, verification, service stop, replacement, restart, post-verification, policy commitment, completion, rollback, and failed-terminal states. Recovery revalidates the current journal identity and follows the phase-specific path; a stranded pre-replacement `Prepared` or `Verified` transaction is terminalized or moved to safe rollback repair, never resumed into target replacement. Terminal `Completed`, `RolledBack`, and `Failed` transactions can be retired by the elevated administrator: only journal-bound private candidate and predecessor-backup artifacts are removed, and the journal is removed last.
+
+Rollback restart uses a cryptographically random, fixed-length, one-time nonce in the journal. After an authenticated restore, the elevated updater issues the authorization and starts the service with the nonce. The Windows service consumes that exact authorization atomically before workers, IPC, health, provenance, heartbeat, or policy work can start. Normal service starts are denied while rollback is unresolved, including stopped, required, authorized-without-the-nonce, and consumed states.
+
+An elevated transaction-wide owner lock prevents concurrent elevated update or recovery operations. A separate short-lived journal lock serializes durable journal reads and mutations, including the service's one-time nonce consumption. LocalService deliberately does not acquire the elevated owner lock, so it can complete the authorized recovery-start handoff without deadlock. Its policy worker instead uses an atomic `PostVerified` handoff under the journal lock: it rechecks the exact transaction identity, verifies the installed target, advances the monotonic target policy high-water mark, and persists `PolicyCommitted`. A retry recognizes an already exact target policy and completes forward; it never lowers policy or restores the predecessor after target policy commitment.
+
+### Operational limits
+
+The stopped-service check immediately before restore is point-in-time. It is not continuous exclusion against an independently authorized SCM start during the nine-file replacement sequence. The nine-file replacement is not release-wide atomic; recovery and cryptographic verification prevent accepting a mixed release. Normal service startup is intentionally denied in unresolved rollback states except for the one-time authorized recovery handoff.
+
+### Developer verification
+
+Use the repository's documented verification commands after restoring dependencies:
+
+```powershell
+dotnet build Vantrel.Security.sln --no-restore
+dotnet test Vantrel.Security.sln --no-build
+```
+
 ## Public brand and compatibility identities
 
 **Kestermere Security** — *Security & System Integrity* — is the public product name and **Mauro Interactive** is the publisher. This branding does not rename the installed compatibility architecture. `VantrelSecurityService`, `Vantrel.Security.*` assemblies and namespaces, `Vantrel.Security.Status.v1` and `Vantrel.Security.Command.v1`, signed sidecars, fixed installation and ProgramData paths, schemas, signing key IDs, and the release-metadata product identifier `vantrel-security` remain intentionally unchanged. They continue to identify already installed and signed releases.
