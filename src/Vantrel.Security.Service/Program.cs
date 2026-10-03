@@ -4,9 +4,11 @@ using Microsoft.Extensions.Logging.EventLog;
 using Vantrel.Security.Core;
 
 var builder = Host.CreateApplicationBuilder(args);
-builder.Services.AddWindowsService(options => options.ServiceName = StatusProtocol.ServiceName);
+var isWindowsService = OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService();
+if (isWindowsService) builder.Services.AddSingleton<IHostLifetime>(provider => new RecoveryWindowsServiceLifetime(
+    provider.GetRequiredService<IHostApplicationLifetime>(), provider.GetRequiredService<RecoveryStartupAdmission>(), StatusProtocol.ServiceName));
 builder.Logging.ClearProviders();
-if (OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService())
+if (isWindowsService)
 {
     builder.Logging.AddEventLog(settings =>
     {
@@ -32,6 +34,9 @@ builder.Services.AddSingleton<ReleasePolicyStore>();
 builder.Services.AddSingleton<ReleaseProvenanceStore>();
 builder.Services.AddSingleton<UpdateTransactionStore>();
 builder.Services.AddSingleton<UpdateTransactionJournalStore>();
+builder.Services.AddSingleton<ScmRecoveryStartArgumentSource>();
+builder.Services.AddSingleton<IRecoveryStartArgumentSource>(provider => provider.GetRequiredService<ScmRecoveryStartArgumentSource>());
+builder.Services.AddSingleton<RecoveryStartupAdmission>();
 builder.Services.AddSingleton<CommandAuditStore>();
 builder.Services.AddSingleton<CommandRequestRegistry>();
 builder.Services.AddSingleton<CommandRejectionLogLimiter>();

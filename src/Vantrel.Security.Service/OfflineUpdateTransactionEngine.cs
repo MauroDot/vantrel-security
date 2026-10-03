@@ -1,4 +1,5 @@
 using Vantrel.Security.Core;
+using System.Security.Cryptography;
 
 namespace Vantrel.Security.Service;
 
@@ -18,6 +19,7 @@ internal interface IOfflineUpdateServiceControl
 {
     Task StopAsync(CancellationToken token);
     Task StartAsync(CancellationToken token);
+    Task StartRecoveryAsync(string nonce, CancellationToken token) => StartAsync(token);
     Task RequireStoppedAsync(CancellationToken token);
 }
 internal interface IOfflineUpdateReleaseFiles
@@ -75,7 +77,8 @@ internal sealed class OfflineUpdateTransactionEngine(IOfflineUpdatePreflight pre
     internal async Task<UpdateTransactionPhase> RecoverAsync(UpdateTransactionJournal journal, CancellationToken token) => journal.Phase switch
     {
         UpdateTransactionPhase.Prepared or UpdateTransactionPhase.Verified => journal.Phase,
-        UpdateTransactionPhase.ServiceStopped or UpdateTransactionPhase.RollbackRequired => await RollbackAsync(journal, token),
+        UpdateTransactionPhase.ServiceStopped or UpdateTransactionPhase.RollbackRequired or UpdateTransactionPhase.RollbackRestartAuthorized => await RollbackAsync(journal, token),
+        UpdateTransactionPhase.RollbackRestartConsumed => await VerifyConsumedRollbackAsync(journal, token),
         UpdateTransactionPhase.Replaced => await ContinueFromReplacedAsync(journal, token),
         UpdateTransactionPhase.Restarted => await ContinueFromRestartedAsync(journal, token),
         UpdateTransactionPhase.PostVerified => await ObserveCommitAsync(journal, token),
@@ -145,14 +148,21 @@ internal sealed class OfflineUpdateTransactionEngine(IOfflineUpdatePreflight pre
             return await PersistFailedAsync(journal, token);
         }
 
+        if (journal.Phase is UpdateTransactionPhase.RollbackRestartAuthorized)
+            journal = await MoveAsync(journal with { RecoveryStartNonce = null }, UpdateTransactionPhase.RollbackRequired, token);
         if (journal.Phase != UpdateTransactionPhase.RollbackRequired)
             journal = await MoveAsync(journal, UpdateTransactionPhase.RollbackRequired, token);
 
         try
         {
             await files.RestoreVerifiedPredecessorAsync(journal, token);
-            await service.StartAsync(token);
+            journal = await AuthorizeRollbackRestartAsync(journal, token);
+            await service.StartRecoveryAsync(journal.RecoveryStartNonce!, token);
             await health.VerifyPredecessorAsync(journal, token);
+            // The service host consumes the authorization. Test seams that do not host it
+            // retain compatibility by consuming it here before terminal completion.
+            if (journal.Phase == UpdateTransactionPhase.RollbackRestartAuthorized)
+                journal = await MoveAsync(journal with { RecoveryStartNonce = null }, UpdateTransactionPhase.RollbackRestartConsumed, token);
             journal = await MoveAsync(journal, UpdateTransactionPhase.RolledBack, token);
             return journal.Phase;
         }
@@ -160,7 +170,27 @@ internal sealed class OfflineUpdateTransactionEngine(IOfflineUpdatePreflight pre
         // RollbackRequired was persisted before any restore write. Retain it after a
         // partial restore, restart, or predecessor-health failure so a later invocation
         // can reauthenticate the backup and repair the fixed set. Failed is terminal.
-        catch { return journal.Phase; }
+        catch
+        {
+            if (journal.Phase == UpdateTransactionPhase.RollbackRestartAuthorized)
+                return (await MoveAsync(journal with { RecoveryStartNonce = null }, UpdateTransactionPhase.RollbackRequired, token)).Phase;
+            return journal.Phase;
+        }
+    }
+
+    private async Task<UpdateTransactionPhase> VerifyConsumedRollbackAsync(UpdateTransactionJournal journal, CancellationToken token)
+    {
+        try { await health.VerifyPredecessorAsync(journal, token); return (await MoveAsync(journal, UpdateTransactionPhase.RolledBack, token)).Phase; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch { return (await MoveAsync(journal, UpdateTransactionPhase.RollbackRequired, token)).Phase; }
+    }
+
+    private async Task<UpdateTransactionJournal> AuthorizeRollbackRestartAsync(UpdateTransactionJournal journal, CancellationToken token)
+    {
+        var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        var next = UpdateTransactionStateMachine.Transition(journal with { RecoveryStartNonce = nonce }, UpdateTransactionPhase.RollbackRestartAuthorized, WholeSecondUtcNow());
+        await journalStore.PersistAsync(next, token);
+        return next;
     }
 
     private async Task<UpdateTransactionPhase> PersistFailedAsync(UpdateTransactionJournal journal, CancellationToken token)

@@ -38,11 +38,13 @@ internal sealed class WindowsVantrelServiceControl : IOfflineUpdateServiceContro
     }, token);
     public Task StopAsync(CancellationToken token) => ChangeAsync(ServiceControllerStatus.Stopped, token);
     public Task StartAsync(CancellationToken token) => ChangeAsync(ServiceControllerStatus.Running, token);
-    private static Task ChangeAsync(ServiceControllerStatus desired, CancellationToken token) => Task.Run(() =>
+    public Task StartRecoveryAsync(string nonce, CancellationToken token) => ChangeAsync(ServiceControllerStatus.Running, token,
+        ["--vantrel-recovery-start=" + nonce]);
+    private static Task ChangeAsync(ServiceControllerStatus desired, CancellationToken token, string[]? arguments = null) => Task.Run(() =>
     {
         token.ThrowIfCancellationRequested(); using var service = new ServiceController(StatusProtocol.ServiceName); service.Refresh();
         if (service.Status == desired) return;
-        if (desired == ServiceControllerStatus.Stopped) service.Stop(); else service.Start();
+        if (desired == ServiceControllerStatus.Stopped) service.Stop(); else if (arguments is null) service.Start(); else service.Start(arguments);
         service.WaitForStatus(desired, Timeout); service.Refresh();
         if (service.Status != desired) throw new System.TimeoutException("Fixed Vantrel service state transition timed out.");
     }, token);

@@ -21,7 +21,7 @@ public sealed class UpdateTransactionJournalStoreTests
         var transactions = Path.Combine(updates, "Transactions");
         Directory.CreateDirectory(scope.Root);
         if (existingLevels >= 1) Directory.CreateDirectory(updates);
-        if (existingLevels >= 2) Directory.CreateDirectory(transactions);
+        if (existingLevels >= 2) { Directory.CreateDirectory(transactions); File.WriteAllBytes(Path.Combine(updates, UpdateTransactionJournalStore.LockFileName), []); }
         var before = Directory.GetFileSystemEntries(scope.Root, "*", SearchOption.AllDirectories);
         var result = await new UpdateTransactionJournalStore(scope.Root, true).ReadAsync(CancellationToken.None);
         Assert.IsNull(result.Journal);
@@ -34,6 +34,7 @@ public sealed class UpdateTransactionJournalStoreTests
     public async Task Valid_journal_read_and_status_sampling_preserve_descriptors_and_files()
     {
         await using var scope = new Scope();
+        scope.Provision();
         await new UpdateTransactionJournalStore(scope.Root, false).PersistAsync(Journal(UpdateTransactionPhase.Prepared), CancellationToken.None);
         var updates = Path.Combine(scope.Root, "Updates");
         var transactions = Path.Combine(updates, "Transactions");
@@ -63,6 +64,7 @@ public sealed class UpdateTransactionJournalStoreTests
     public async Task Access_denied_existing_journal_is_not_absence()
     {
         await using var scope = new Scope();
+        scope.Provision();
         await new UpdateTransactionJournalStore(scope.Root, false).PersistAsync(Journal(UpdateTransactionPhase.Prepared), CancellationToken.None);
         var file = new FileInfo(Path.Combine(scope.Root, "Updates", "Transactions", UpdateTransactionJournalStore.JournalFileName));
         var original = file.GetAccessControl();
@@ -81,6 +83,7 @@ public sealed class UpdateTransactionJournalStoreTests
     public async Task Access_denied_journal_cannot_reach_admission_or_recovery()
     {
         await using var scope = new Scope();
+        scope.Provision();
         var store = new UpdateTransactionJournalStore(scope.Root, false);
         await store.PersistAsync(Journal(UpdateTransactionPhase.Prepared), CancellationToken.None);
         var file = new FileInfo(Path.Combine(scope.Root, "Updates", "Transactions", UpdateTransactionJournalStore.JournalFileName));
@@ -107,7 +110,7 @@ public sealed class UpdateTransactionJournalStoreTests
     public async Task Journal_directory_substitution_is_not_absence()
     {
         await using var scope = new Scope();
-        Directory.CreateDirectory(Path.Combine(scope.Root, "Updates", "Transactions", UpdateTransactionJournalStore.JournalFileName));
+        scope.Provision(); Directory.CreateDirectory(Path.Combine(scope.Root, "Updates", "Transactions", UpdateTransactionJournalStore.JournalFileName));
         await Assert.ThrowsExceptionAsync<IOException>(() => new UpdateTransactionJournalStore(scope.Root, true).ReadAsync(CancellationToken.None));
     }
 
@@ -133,6 +136,7 @@ public sealed class UpdateTransactionJournalStoreTests
     public async Task Journal_persists_canonically_and_rejects_illegal_phase_skip()
     {
         await using var scope = new Scope(); var store = new UpdateTransactionJournalStore(scope.Root, false);
+        scope.Provision();
         var prepared = Journal(UpdateTransactionPhase.Prepared);
         await store.PersistAsync(prepared, CancellationToken.None);
         var (read, failure) = await store.ReadAsync(CancellationToken.None);
@@ -146,7 +150,7 @@ public sealed class UpdateTransactionJournalStoreTests
     [TestMethod]
     public async Task Malformed_persisted_journal_fails_closed()
     {
-        await using var scope = new Scope(); var directory = Path.Combine(scope.Root, "Updates", "Transactions"); Directory.CreateDirectory(directory);
+        await using var scope = new Scope(); scope.Provision(); var directory = Path.Combine(scope.Root, "Updates", "Transactions");
         await File.WriteAllTextAsync(Path.Combine(directory, UpdateTransactionJournalStore.JournalFileName), "invalid");
         var result = await new UpdateTransactionJournalStore(scope.Root, false).ReadAsync(CancellationToken.None);
         Assert.AreEqual(UpdateTransactionJournalParseFailure.Malformed, result.Failure); Assert.IsNull(result.Journal);
@@ -157,7 +161,7 @@ public sealed class UpdateTransactionJournalStoreTests
     public async Task Valid_provisioned_absence_can_reach_new_transaction_admission()
     {
         await using var scope = new Scope();
-        Directory.CreateDirectory(Path.Combine(scope.Root, "Updates", "Transactions"));
+        scope.Provision();
         var store = new UpdateTransactionJournalStore(scope.Root, false);
         var calls = 0;
         var phase = await OfflineUpdateAdministrator.WithValidatedJournalAsync(store, journal =>
@@ -171,9 +175,21 @@ public sealed class UpdateTransactionJournalStoreTests
     }
 
     [TestMethod]
+    public async Task Missing_fixed_lock_fails_closed_for_reads_and_mutations()
+    {
+        await using var scope = new Scope();
+        Directory.CreateDirectory(Path.Combine(scope.Root, "Updates", "Transactions"));
+        var store = new UpdateTransactionJournalStore(scope.Root, false);
+        Assert.AreEqual(JournalReadState.MissingInfrastructure, (await store.ReadAsync(CancellationToken.None)).State);
+        await Assert.ThrowsExceptionAsync<IOException>(() => store.PersistAsync(Journal(UpdateTransactionPhase.Prepared), CancellationToken.None));
+        Assert.IsFalse(File.Exists(Path.Combine(scope.Root, "Updates", UpdateTransactionJournalStore.LockFileName)));
+    }
+
+    [TestMethod]
     public async Task Valid_present_journal_reaches_recovery_with_exact_identity()
     {
         await using var scope = new Scope();
+        scope.Provision();
         var expected = Journal(UpdateTransactionPhase.ServiceStopped);
         var store = new UpdateTransactionJournalStore(scope.Root, false);
         var prepared = expected with { Phase = UpdateTransactionPhase.Prepared };
@@ -258,5 +274,10 @@ public sealed class UpdateTransactionJournalStoreTests
     }
 
     private static UpdateTransactionJournal Journal(UpdateTransactionPhase phase) => new("0123456789abcdef0123456789abcdef", 1, Prior, 2, Target, phase, "fedcba9876543210fedcba9876543210", new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero));
-    private sealed class Scope : IAsyncDisposable { internal string Root { get; } = Path.Combine(Path.GetTempPath(), "vantrel-journal-" + Guid.NewGuid().ToString("N")); public ValueTask DisposeAsync() { if (Directory.Exists(Root)) Directory.Delete(Root, true); return ValueTask.CompletedTask; } }
+    private sealed class Scope : IAsyncDisposable
+    {
+        internal string Root { get; } = Path.Combine(Path.GetTempPath(), "vantrel-journal-" + Guid.NewGuid().ToString("N"));
+        internal void Provision() { Directory.CreateDirectory(Path.Combine(Root, "Updates", "Transactions")); File.WriteAllBytes(Path.Combine(Root, "Updates", UpdateTransactionJournalStore.LockFileName), []); }
+        public ValueTask DisposeAsync() { if (Directory.Exists(Root)) Directory.Delete(Root, true); return ValueTask.CompletedTask; }
+    }
 }

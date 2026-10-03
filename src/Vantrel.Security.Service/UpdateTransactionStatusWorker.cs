@@ -39,7 +39,7 @@ public sealed class UpdateTransactionStatusWorker(UpdateTransactionStore store, 
                     UpdateTransactionPhase.Completed => UpdateTransactionResult.Completed,
                     UpdateTransactionPhase.RolledBack => UpdateTransactionResult.RolledBack,
                     UpdateTransactionPhase.Failed => UpdateTransactionResult.Failed,
-                    UpdateTransactionPhase.RollbackRequired => UpdateTransactionResult.RecoveryRequired,
+                    UpdateTransactionPhase.RollbackRequired or UpdateTransactionPhase.RollbackRestartAuthorized or UpdateTransactionPhase.RollbackRestartConsumed => UpdateTransactionResult.RecoveryRequired,
                     _ => UpdateTransactionResult.None
                 });
         store.Update(snapshot);

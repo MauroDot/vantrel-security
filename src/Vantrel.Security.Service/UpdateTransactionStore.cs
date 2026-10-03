@@ -24,11 +24,13 @@ public sealed class UpdateTransactionStore
 public sealed class UpdateTransactionJournalStore
 {
     internal const string JournalFileName = "current-update-v1";
+    internal const string LockFileName = ".current-update-v1.lock";
     private readonly string _updatesRoot;
     private readonly string _transactionsRoot;
     private readonly string _journalPath;
     private readonly bool _applyAcls;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly string _lockPath;
 
     public UpdateTransactionJournalStore() : this(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Vantrel Security"), true) { }
     internal UpdateTransactionJournalStore(string vantrelRoot, bool applyAcls = true)
@@ -38,11 +40,18 @@ public sealed class UpdateTransactionJournalStore
         _transactionsRoot = Path.Combine(_updatesRoot, "Transactions");
         _journalPath = Path.Combine(_transactionsRoot, JournalFileName);
         _applyAcls = applyAcls;
+        _lockPath = Path.Combine(_updatesRoot, LockFileName);
     }
 
     internal async Task<JournalReadResult> ReadAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
+        // Reads never create update infrastructure. A journal is absent only in a
+        // provisioned root that contains the fixed synchronization object.
+        if (!Directory.Exists(_updatesRoot) || !Directory.Exists(_transactionsRoot) || !File.Exists(_lockPath))
+            return new(null, UpdateTransactionJournalParseFailure.Unavailable, JournalReadState.MissingInfrastructure);
+        RejectRegularFile(_lockPath);
+        await using var interprocess = await AcquireInterprocessLockAsync(token);
         await _gate.WaitAsync(token);
         try
         {
@@ -85,65 +94,126 @@ public sealed class UpdateTransactionJournalStore
     {
         ArgumentNullException.ThrowIfNull(journal);
         token.ThrowIfCancellationRequested();
+        RequireProvisionedInfrastructure();
+        await using var interprocess = await AcquireInterprocessLockAsync(token);
         await _gate.WaitAsync(token);
         try
         {
-            EnsureDirectory(_updatesRoot); EnsureDirectory(_transactionsRoot);
-            if (File.Exists(_journalPath))
-            {
-                RejectReparse(_journalPath);
-                var existingBytes = File.ReadAllBytes(_journalPath);
-                if (!UpdateTransactionJournalCodec.TryParse(existingBytes, out var existing, out var failure) || existing is null)
-                    throw new IOException("Existing update transaction journal is invalid: " + failure);
-                if (existing.TransactionId != journal.TransactionId || existing.BackupId != journal.BackupId ||
-                    existing.PriorReleaseSequence != journal.PriorReleaseSequence || existing.PriorManifestSha256 != journal.PriorManifestSha256 ||
-                    existing.TargetReleaseSequence != journal.TargetReleaseSequence || existing.TargetManifestSha256 != journal.TargetManifestSha256 ||
-                    (existing.Phase != journal.Phase && !UpdateTransactionStateMachine.CanTransition(existing.Phase, journal.Phase)))
-                    throw new InvalidOperationException("Illegal update transaction journal mutation.");
-            }
-            else if (journal.Phase != UpdateTransactionPhase.Prepared)
-                throw new InvalidOperationException("A new update transaction journal must begin Prepared.");
-            var temporary = Path.Combine(_transactionsRoot, ".transaction-" + Guid.NewGuid().ToString("N") + ".tmp");
-            try
-            {
-                var bytes = UpdateTransactionJournalCodec.Serialize(journal);
-                using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
-                {
-                    RejectReparse(temporary);
-                    if (_applyAcls) ApplyFileAcl(temporary);
-                    await stream.WriteAsync(bytes, token);
-                    await stream.FlushAsync(token);
-                    stream.Flush(flushToDisk: true);
-                }
-                RejectReparse(temporary);
-                var replaced = File.Exists(_journalPath);
-                if (replaced) { RejectReparse(_journalPath); File.Replace(temporary, _journalPath, null); }
-                else File.Move(temporary, _journalPath, false);
-                RejectReparse(_journalPath);
-                if (_applyAcls)
-                {
-                    ApplyFileAcl(_journalPath);
-                    if (replaced)
-                    {
-                        var validation = UpdateFilesystemSecurity.ValidateLocalServiceReplacedMutableFileOnDisk(new FileInfo(_journalPath));
-                        if (!validation.IsMatch) throw new IOException("LocalService-replaced journal descriptor verification failed: " + validation.Mismatch);
-                    }
-                }
-                var check = File.ReadAllBytes(_journalPath);
-                if (!UpdateTransactionJournalCodec.TryParse(check, out var parsed, out var failure) || parsed != journal)
-                    throw new IOException("Update transaction journal verification failed: " + failure);
-            }
-            finally { if (File.Exists(temporary)) { try { RejectReparse(temporary); File.Delete(temporary); } catch { } } }
+            await PersistLockedAsync(journal, token);
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>Consumes the one fixed recovery-start capability before any hosted worker is admitted.</summary>
+    internal async Task<bool> TryConsumeRecoveryStartAsync(string? nonce, CancellationToken token)
+        => await TryConsumeRecoveryStartLeaseAsync(nonce, token) is not null;
+
+    internal async Task<RecoveryStartConsumptionLease?> TryConsumeRecoveryStartLeaseAsync(string? nonce, CancellationToken token)
+    {
+        if (!UpdateTransactionJournalCodec.IsNonce(nonce)) return null;
+        token.ThrowIfCancellationRequested();
+        if (!HasProvisionedInfrastructure()) return null;
+        await using var interprocess = await AcquireInterprocessLockAsync(token);
+        // The same instance gate serializes every journal mutation. SCM permits one service process.
+        await _gate.WaitAsync(token);
+        try
+        {
+            if (!File.Exists(_journalPath)) return null;
+            var bytes = File.ReadAllBytes(_journalPath);
+            if (!UpdateTransactionJournalCodec.TryParse(bytes, out var journal, out _) || journal?.Phase != UpdateTransactionPhase.RollbackRestartAuthorized ||
+                !string.Equals(journal.RecoveryStartNonce, nonce, StringComparison.Ordinal)) return null;
+            var now = DateTimeOffset.UtcNow; now = new DateTimeOffset(now.Ticks - now.Ticks % TimeSpan.TicksPerSecond, TimeSpan.Zero);
+            var next = UpdateTransactionStateMachine.Transition(journal with { RecoveryStartNonce = null }, UpdateTransactionPhase.RollbackRestartConsumed, now);
+            // Once the compare has selected this authorization, complete the durable
+            // consume without a cancellation gap so the caller always receives a lease
+            // it can release or revoke.
+            await PersistLockedAsync(next, CancellationToken.None);
+            return new(journal.TransactionId, journal.BackupId, journal.PriorReleaseSequence, journal.PriorManifestSha256);
+        }
+        finally { _gate.Release(); }
+    }
+
+    internal async Task RevokeConsumedRecoveryStartAsync(RecoveryStartConsumptionLease lease, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        RequireProvisionedInfrastructure();
+        await using var interprocess = await AcquireInterprocessLockAsync(token);
+        await _gate.WaitAsync(token);
+        try
+        {
+            if (!File.Exists(_journalPath)) return;
+            var bytes = await File.ReadAllBytesAsync(_journalPath, token);
+            if (!UpdateTransactionJournalCodec.TryParse(bytes, out var journal, out _) || journal is null ||
+                journal.TransactionId != lease.TransactionId || journal.BackupId != lease.BackupId || journal.PriorReleaseSequence != lease.PriorReleaseSequence ||
+                journal.PriorManifestSha256 != lease.PriorManifestSha256 || journal.Phase != UpdateTransactionPhase.RollbackRestartConsumed) return;
+            var now = DateTimeOffset.UtcNow; now = new DateTimeOffset(now.Ticks - now.Ticks % TimeSpan.TicksPerSecond, TimeSpan.Zero);
+            await PersistLockedAsync(UpdateTransactionStateMachine.Transition(journal, UpdateTransactionPhase.RollbackRequired, now), token);
         }
         finally { _gate.Release(); }
     }
 
     internal static void RejectReparseAttributes(FileAttributes attributes) => ReleasePolicyStore.RejectReparseAttributes(attributes);
     private static void RejectReparse(string path) => RejectReparseAttributes(File.GetAttributes(path));
-    private void EnsureDirectory(string path)
+    private static void RejectRegularFile(string path)
     {
-        if (!Directory.Exists(path)) Directory.CreateDirectory(path);
-        RejectReparse(path); if (_applyAcls) ApplyDirectoryAcl(path);
+        var attributes = File.GetAttributes(path); RejectReparseAttributes(attributes);
+        if ((attributes & FileAttributes.Directory) != 0) throw new IOException("Journal synchronization object is not a regular file.");
+    }
+    private bool HasProvisionedInfrastructure()
+    {
+        try { RequireProvisionedInfrastructure(); return true; }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
+    private void RequireProvisionedInfrastructure()
+    {
+        if (!Directory.Exists(_updatesRoot) || !Directory.Exists(_transactionsRoot) || !File.Exists(_lockPath))
+            throw new IOException("Protected update journal infrastructure is unavailable.");
+        RejectReparse(_updatesRoot); RejectReparse(_transactionsRoot); RejectRegularFile(_lockPath);
+    }
+    private async Task<FileStream> AcquireInterprocessLockAsync(CancellationToken token)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                return new FileStream(_lockPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None, 1, FileOptions.WriteThrough);
+            }
+            catch (IOException) when (DateTime.UtcNow < deadline) { await Task.Delay(50, token); }
+        }
+    }
+    private async Task PersistLockedAsync(UpdateTransactionJournal journal, CancellationToken token)
+    {
+        if (File.Exists(_journalPath))
+        {
+            RejectReparse(_journalPath);
+            var existingBytes = await File.ReadAllBytesAsync(_journalPath, token);
+            if (!UpdateTransactionJournalCodec.TryParse(existingBytes, out var existing, out var failure) || existing is null)
+                throw new IOException("Existing update transaction journal is invalid: " + failure);
+            if (existing.TransactionId != journal.TransactionId || existing.BackupId != journal.BackupId ||
+                existing.PriorReleaseSequence != journal.PriorReleaseSequence || existing.PriorManifestSha256 != journal.PriorManifestSha256 ||
+                existing.TargetReleaseSequence != journal.TargetReleaseSequence || existing.TargetManifestSha256 != journal.TargetManifestSha256 ||
+                (existing.RecoveryStartNonce != journal.RecoveryStartNonce && !((existing.Phase == UpdateTransactionPhase.RollbackRequired && existing.RecoveryStartNonce is null && journal.Phase == UpdateTransactionPhase.RollbackRestartAuthorized && UpdateTransactionJournalCodec.IsNonce(journal.RecoveryStartNonce)) || (existing.Phase == UpdateTransactionPhase.RollbackRestartAuthorized && journal.RecoveryStartNonce is null && journal.Phase is UpdateTransactionPhase.RollbackRestartConsumed or UpdateTransactionPhase.RollbackRequired))) ||
+                (existing.Phase != journal.Phase && !UpdateTransactionStateMachine.CanTransition(existing.Phase, journal.Phase)))
+                throw new InvalidOperationException("Illegal update transaction journal mutation.");
+        }
+        else if (journal.Phase != UpdateTransactionPhase.Prepared) throw new InvalidOperationException("A new update transaction journal must begin Prepared.");
+        var temporary = Path.Combine(_transactionsRoot, ".transaction-" + Guid.NewGuid().ToString("N") + ".tmp");
+        try
+        {
+            var bytes = UpdateTransactionJournalCodec.Serialize(journal);
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            { RejectReparse(temporary); if (_applyAcls) ApplyFileAcl(temporary); await stream.WriteAsync(bytes, token); await stream.FlushAsync(token); stream.Flush(flushToDisk: true); }
+            RejectReparse(temporary); var replaced = File.Exists(_journalPath);
+            if (replaced) { RejectReparse(_journalPath); File.Replace(temporary, _journalPath, null); } else File.Move(temporary, _journalPath, false);
+            RejectReparse(_journalPath);
+            if (_applyAcls) { ApplyFileAcl(_journalPath); if (replaced) { var validation = UpdateFilesystemSecurity.ValidateLocalServiceReplacedMutableFileOnDisk(new FileInfo(_journalPath)); if (!validation.IsMatch) throw new IOException("LocalService-replaced journal descriptor verification failed: " + validation.Mismatch); } }
+            var check = await File.ReadAllBytesAsync(_journalPath, token);
+            if (!UpdateTransactionJournalCodec.TryParse(check, out var parsed, out var failure) || parsed != journal) throw new IOException("Update transaction journal verification failed: " + failure);
+        }
+        finally { if (File.Exists(temporary)) { try { RejectReparse(temporary); File.Delete(temporary); } catch { } } }
     }
     private static void ApplyDirectoryAcl(string path)
     {

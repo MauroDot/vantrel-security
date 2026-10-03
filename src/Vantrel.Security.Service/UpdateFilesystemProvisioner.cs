@@ -13,6 +13,7 @@ internal sealed record ProvisionedUpdateFilesystem(
     string BackupsRoot,
     string FixedBackupRoot,
     string ReleasePolicyRoot,
+    string JournalLockFile,
     string JournalFile,
     string PolicyFile);
 
@@ -67,6 +68,7 @@ internal sealed class UpdateFilesystemProvisioner
             var index = 0;
             CreateDirectory(paths.ProductRoot, UpdateDirectoryRole.ProductRoot, createdDirectories, index++, failDirectoryCreation, failAclApplication);
             CreateDirectory(paths.UpdatesRoot, UpdateDirectoryRole.UpdatesRoot, createdDirectories, index++, failDirectoryCreation, failAclApplication);
+            CreateMutableFixture(paths.JournalLockFile, createdFiles);
             CreateDirectory(paths.TransactionsRoot, UpdateDirectoryRole.TransactionsRoot, createdDirectories, index++, failDirectoryCreation, failAclApplication);
             CreateDirectory(paths.TransactionRoot, UpdateDirectoryRole.TransactionDirectory, createdDirectories, index++, failDirectoryCreation, failAclApplication);
             CreateDirectory(paths.PrivateCandidateRoot, UpdateDirectoryRole.PrivateCandidateDirectory, createdDirectories, index++, failDirectoryCreation, failAclApplication);
@@ -89,7 +91,7 @@ internal sealed class UpdateFilesystemProvisioner
         if (!_isAdministrator()) throw new UnauthorizedAccessException("An enabled Administrator token is required.");
         if (!_disposableBoundary || !PathsEqual(paths.ProductRoot, _productRoot))
             throw new InvalidOperationException("Disposable cleanup boundary rejected.");
-        CleanupKnownEntries([paths.JournalFile, paths.PolicyFile],
+        CleanupKnownEntries([paths.JournalFile, paths.PolicyFile, paths.JournalLockFile],
             [paths.ProductRoot, paths.UpdatesRoot, paths.TransactionsRoot, paths.TransactionRoot,
              paths.PrivateCandidateRoot, paths.BackupsRoot, paths.FixedBackupRoot, paths.ReleasePolicyRoot]);
         if (Directory.Exists(_productRoot) || File.Exists(_productRoot))
@@ -150,7 +152,7 @@ internal sealed class UpdateFilesystemProvisioner
         var backups = Path.Combine(updates, "Backups");
         var releasePolicy = Path.Combine(_productRoot, "ReleasePolicy");
         return new(_productRoot, updates, transactions, transaction, Path.Combine(transaction, "candidate"), backups,
-            Path.Combine(backups, backupId), releasePolicy, Path.Combine(transactions, UpdateTransactionJournalStore.JournalFileName),
+            Path.Combine(backups, backupId), releasePolicy, Path.Combine(updates, UpdateTransactionJournalStore.LockFileName), Path.Combine(transactions, UpdateTransactionJournalStore.JournalFileName),
             Path.Combine(releasePolicy, ReleasePolicyStore.PolicyFileName));
     }
 

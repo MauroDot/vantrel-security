@@ -482,6 +482,7 @@ public sealed class RollbackRecoveryPersistenceTests
                 predecessor.ManifestSha256, target.Sequence, target.ManifestSha256, UpdateTransactionPhase.Prepared,
                 "fedcba9876543210fedcba9876543210", new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero));
             Directory.CreateDirectory(Path.Combine(fixture.Updates, "Transactions"));
+            await File.WriteAllBytesAsync(Path.Combine(fixture.Updates, UpdateTransactionJournalStore.LockFileName), Array.Empty<byte>());
             await fixture.PersistThroughAsync(initialPhase);
             return fixture;
         }

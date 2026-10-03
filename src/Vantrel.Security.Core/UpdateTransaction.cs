@@ -15,6 +15,8 @@ public enum UpdateTransactionPhase
     PolicyCommitted,
     Completed,
     RollbackRequired,
+    RollbackRestartAuthorized,
+    RollbackRestartConsumed,
     RolledBack,
     Failed
 }
@@ -64,7 +66,8 @@ public sealed record UpdateTransactionJournal(
     string TargetManifestSha256,
     UpdateTransactionPhase Phase,
     string BackupId,
-    DateTimeOffset UpdatedAtUtc);
+    DateTimeOffset UpdatedAtUtc,
+    string? RecoveryStartNonce = null);
 
 public enum UpdateTransactionJournalParseFailure { None, Unavailable, Malformed, UnsupportedSchema }
 
@@ -82,6 +85,10 @@ public static class UpdateTransactionStateMachine
         (UpdateTransactionPhase.PolicyCommitted, UpdateTransactionPhase.Completed) => true,
         (UpdateTransactionPhase.Prepared or UpdateTransactionPhase.Verified or UpdateTransactionPhase.ServiceStopped or UpdateTransactionPhase.Replaced or UpdateTransactionPhase.Restarted or UpdateTransactionPhase.PostVerified, UpdateTransactionPhase.RollbackRequired) => true,
         (UpdateTransactionPhase.RollbackRequired, UpdateTransactionPhase.RolledBack) => true,
+        (UpdateTransactionPhase.RollbackRequired, UpdateTransactionPhase.RollbackRestartAuthorized) => true,
+        (UpdateTransactionPhase.RollbackRestartAuthorized, UpdateTransactionPhase.RollbackRestartConsumed) => true,
+        (UpdateTransactionPhase.RollbackRestartAuthorized or UpdateTransactionPhase.RollbackRestartConsumed, UpdateTransactionPhase.RollbackRequired) => true,
+        (UpdateTransactionPhase.RollbackRestartConsumed, UpdateTransactionPhase.RolledBack) => true,
         (UpdateTransactionPhase.Prepared or UpdateTransactionPhase.Verified or UpdateTransactionPhase.ServiceStopped or UpdateTransactionPhase.Replaced or UpdateTransactionPhase.Restarted or UpdateTransactionPhase.PostVerified or UpdateTransactionPhase.PolicyCommitted, UpdateTransactionPhase.Failed) => true,
         (UpdateTransactionPhase.RolledBack or UpdateTransactionPhase.Completed or UpdateTransactionPhase.Failed, UpdateTransactionPhase.Failed) => false,
         _ => false
@@ -99,7 +106,8 @@ public static class UpdateTransactionStateMachine
 public static class UpdateTransactionJournalCodec
 {
     public const int MaximumBytes = 2048;
-    public const string Schema = "vantrel-update-transaction-v1";
+    public const string Schema = "vantrel-update-transaction-v2";
+    public const string LegacySchema = "vantrel-update-transaction-v1";
     private const string TimestampFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'";
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
@@ -108,9 +116,11 @@ public static class UpdateTransactionJournalCodec
         ArgumentNullException.ThrowIfNull(value);
         if (!IsId(value.TransactionId) || !IsId(value.BackupId) || value.PriorReleaseSequence == 0 || value.TargetReleaseSequence == 0 ||
             !IsUpperHash(value.PriorManifestSha256) || !IsUpperHash(value.TargetManifestSha256) || value.UpdatedAtUtc.Offset != TimeSpan.Zero ||
-            value.UpdatedAtUtc.Ticks % TimeSpan.TicksPerSecond != 0 || value.Phase == UpdateTransactionPhase.Idle || !Enum.IsDefined(value.Phase))
+            value.UpdatedAtUtc.Ticks % TimeSpan.TicksPerSecond != 0 || value.Phase == UpdateTransactionPhase.Idle || !Enum.IsDefined(value.Phase) ||
+            (value.Phase == UpdateTransactionPhase.RollbackRestartAuthorized) != IsNonce(value.RecoveryStartNonce) ||
+            (value.Phase != UpdateTransactionPhase.RollbackRestartAuthorized && value.RecoveryStartNonce is not null))
             throw new ArgumentException("Invalid bounded update transaction journal.", nameof(value));
-        var text = $"schema={Schema}\ntransaction-id={value.TransactionId}\nprior-release-sequence={value.PriorReleaseSequence.ToString(CultureInfo.InvariantCulture)}\nprior-manifest-sha256={value.PriorManifestSha256}\ntarget-release-sequence={value.TargetReleaseSequence.ToString(CultureInfo.InvariantCulture)}\ntarget-manifest-sha256={value.TargetManifestSha256}\nphase={value.Phase}\nbackup-id={value.BackupId}\nupdated-at-utc={value.UpdatedAtUtc.ToString(TimestampFormat, CultureInfo.InvariantCulture)}\n";
+        var text = $"schema={Schema}\ntransaction-id={value.TransactionId}\nprior-release-sequence={value.PriorReleaseSequence.ToString(CultureInfo.InvariantCulture)}\nprior-manifest-sha256={value.PriorManifestSha256}\ntarget-release-sequence={value.TargetReleaseSequence.ToString(CultureInfo.InvariantCulture)}\ntarget-manifest-sha256={value.TargetManifestSha256}\nphase={value.Phase}\nbackup-id={value.BackupId}\nupdated-at-utc={value.UpdatedAtUtc.ToString(TimestampFormat, CultureInfo.InvariantCulture)}\nrecovery-start-nonce={value.RecoveryStartNonce ?? string.Empty}\n";
         return Utf8.GetBytes(text);
     }
 
@@ -122,10 +132,13 @@ public static class UpdateTransactionJournalCodec
         string text;
         try { text = Utf8.GetString(bytes); } catch (DecoderFallbackException) { failure = UpdateTransactionJournalParseFailure.Malformed; return false; }
         var lines = text.Split('\n');
-        if (!text.EndsWith('\n') || lines.Length != 10 || lines[^1].Length != 0)
+        if (!text.EndsWith('\n') || lines[^1].Length != 0)
         { failure = UpdateTransactionJournalParseFailure.Malformed; return false; }
-        if (lines[0] != "schema=" + Schema)
+        var legacy = lines[0] == "schema=" + LegacySchema;
+        if (lines[0] != "schema=" + Schema && !legacy)
         { failure = lines[0].StartsWith("schema=", StringComparison.Ordinal) ? UpdateTransactionJournalParseFailure.UnsupportedSchema : UpdateTransactionJournalParseFailure.Malformed; return false; }
+        if ((legacy && lines.Length != 10) || (!legacy && lines.Length != 11)) { failure = UpdateTransactionJournalParseFailure.Malformed; return false; }
+        var nonce = string.Empty;
         if (!Field(lines[1], "transaction-id", out var transactionId) || !IsId(transactionId) ||
             !Field(lines[2], "prior-release-sequence", out var priorText) || !Sequence(priorText, out var prior) ||
             !Field(lines[3], "prior-manifest-sha256", out var priorHash) || !IsUpperHash(priorHash) ||
@@ -133,14 +146,18 @@ public static class UpdateTransactionJournalCodec
             !Field(lines[5], "target-manifest-sha256", out var targetHash) || !IsUpperHash(targetHash) ||
             !Field(lines[6], "phase", out var phaseText) || !Enum.TryParse<UpdateTransactionPhase>(phaseText, false, out var phase) || !Enum.IsDefined(phase) || phase == UpdateTransactionPhase.Idle ||
             !Field(lines[7], "backup-id", out var backupId) || !IsId(backupId) ||
-            !Field(lines[8], "updated-at-utc", out var updatedText) || !DateTimeOffset.TryParseExact(updatedText, TimestampFormat, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var updated) || updated.ToString(TimestampFormat, CultureInfo.InvariantCulture) != updatedText)
+            !Field(lines[8], "updated-at-utc", out var updatedText) || !DateTimeOffset.TryParseExact(updatedText, TimestampFormat, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var updated) || updated.ToString(TimestampFormat, CultureInfo.InvariantCulture) != updatedText ||
+            (!legacy && !Field(lines[9], "recovery-start-nonce", out nonce)))
         { failure = UpdateTransactionJournalParseFailure.Malformed; return false; }
-        var parsed = new UpdateTransactionJournal(transactionId, prior, priorHash, target, targetHash, phase, backupId, updated);
-        if (!bytes.SequenceEqual(Serialize(parsed))) { failure = UpdateTransactionJournalParseFailure.Malformed; return false; }
+        var parsed = new UpdateTransactionJournal(transactionId, prior, priorHash, target, targetHash, phase, backupId, updated, legacy || nonce.Length == 0 ? null : nonce);
+        if ((phase == UpdateTransactionPhase.RollbackRestartAuthorized) != IsNonce(parsed.RecoveryStartNonce) ||
+            (phase != UpdateTransactionPhase.RollbackRestartAuthorized && parsed.RecoveryStartNonce is not null) ||
+            (!legacy && !bytes.SequenceEqual(Serialize(parsed)))) { failure = UpdateTransactionJournalParseFailure.Malformed; return false; }
         journal = parsed; failure = UpdateTransactionJournalParseFailure.None; return true;
     }
 
     public static bool IsId(string? value) => value is { Length: 32 } && value.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
+    public static bool IsNonce(string? value) => IsId(value);
     private static bool Field(string line, string name, out string value) { var prefix = name + "="; if (!line.StartsWith(prefix, StringComparison.Ordinal)) { value = string.Empty; return false; } value = line[prefix.Length..]; return true; }
     private static bool Sequence(string value, out ulong sequence)
     {
