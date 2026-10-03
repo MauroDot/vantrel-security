@@ -160,6 +160,18 @@ public partial class MainWindow : Window
                 RenderTrustedManifestIntegrityHistory(history, status is not null);
                 UpdateRefreshIntegrityControl();
             }
+            if (ProtectionPanel.Visibility == Visibility.Visible)
+            {
+                var health = status is null ? null : await _healthClient.GetSystemHealthAsync(cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                var trustedManifest = status is null ? null : await _trustedManifestIntegrityClient.GetTrustedManifestIntegrityAsync(cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                var releaseProvenance = status is null ? null : await _releaseProvenanceClient.GetReleaseProvenanceAsync(cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                var updateTransaction = status is null ? null : await _updateTransactionClient.GetUpdateStatusAsync(cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                RenderProtectionOverview(status, health, trustedManifest, releaseProvenance, updateTransaction);
+            }
             _logger.LogInformation("Service status query completed: {Connected}", status is not null);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
@@ -183,6 +195,7 @@ public partial class MainWindow : Window
             if (InstallationPanel.Visibility == Visibility.Visible) RenderReleaseProvenance(null, false);
             if (InstallationPanel.Visibility == Visibility.Visible) RenderIntegrityRefreshAudit(null, false);
             if (InstallationPanel.Visibility == Visibility.Visible) RenderTrustedManifestIntegrityHistory(null, false);
+            if (ProtectionPanel.Visibility == Visibility.Visible) RenderProtectionOverview(null, null, null, null, null);
             if (_trustedManifestRefresh.IsInFlight)
             {
                 _trustedManifestRefreshCancellation?.Cancel();
@@ -243,6 +256,34 @@ public partial class MainWindow : Window
         if (presentation.State == UpdateTransactionDisplayState.Disconnected) _updateTransactionWasDisconnected = true;
         else if (presentation.State is UpdateTransactionDisplayState.Current or UpdateTransactionDisplayState.Recovered) _updateTransactionWasDisconnected = false;
     }
+
+    private void RenderProtectionOverview(SecurityServiceStatus? service, SystemHealthSnapshot? health,
+        TrustedManifestIntegritySnapshot? installation, ReleaseProvenanceSnapshot? provenance, UpdateTransactionSnapshot? update)
+    {
+        var presentation = ProtectionOverviewPresentation.Create(service, health, installation, provenance, update,
+            service is not null, DateTimeOffset.UtcNow, _trustedManifestWasDisconnected,
+            _releaseProvenanceWasDisconnected, _updateTransactionWasDisconnected);
+        ProtectionOverviewNoticeText.Text = presentation.NoticeText;
+        ProtectionServiceText.Text = presentation.ServiceText;
+        ProtectionAntivirusText.Text = presentation.AntivirusText;
+        ProtectionFirewallText.Text = presentation.FirewallText;
+        ProtectionInstallationText.Text = presentation.InstallationText;
+        ProtectionProvenanceText.Text = presentation.ProvenanceText;
+        ProtectionUpdateText.Text = presentation.UpdateText;
+        if (presentation.InstallationState == TrustedManifestIntegrityDisplayState.Disconnected)
+            _trustedManifestWasDisconnected = true;
+        else if (presentation.InstallationState is TrustedManifestIntegrityDisplayState.Current or TrustedManifestIntegrityDisplayState.Recovered)
+            _trustedManifestWasDisconnected = false;
+        if (presentation.ProvenanceState == ReleaseProvenanceDisplayState.Disconnected)
+            _releaseProvenanceWasDisconnected = true;
+        else if (presentation.ProvenanceState is ReleaseProvenanceDisplayState.Current or ReleaseProvenanceDisplayState.Recovered)
+            _releaseProvenanceWasDisconnected = false;
+        if (presentation.UpdateState == UpdateTransactionDisplayState.Disconnected)
+            _updateTransactionWasDisconnected = true;
+        else if (presentation.UpdateState is UpdateTransactionDisplayState.Current or UpdateTransactionDisplayState.Recovered)
+            _updateTransactionWasDisconnected = false;
+    }
+
     private void RenderIntegrityRefreshAudit(IntegrityRefreshAuditSnapshot? audit, bool connected)
     {
         var state = IntegrityRefreshAuditPresentation.State(audit, connected, _integrityRefreshAuditWasDisconnected);
@@ -507,6 +548,7 @@ public partial class MainWindow : Window
         DashboardPanel.Visibility = section == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
         ScanPanel.Visibility = section == "Scan" ? Visibility.Visible : Visibility.Collapsed;
         InstallationPanel.Visibility = section == "Installation" ? Visibility.Visible : Visibility.Collapsed;
+        ProtectionPanel.Visibility = section == "Protection" ? Visibility.Visible : Visibility.Collapsed;
         SystemHealthPanel.Visibility = section == "System Health" ? Visibility.Visible : Visibility.Collapsed;
         ActivityPanel.Visibility = section == "Activity" ? Visibility.Visible : Visibility.Collapsed;
         PlaceholderPanel.Visibility = DesktopSectionNavigation.IsWorkspace(section) ? Visibility.Collapsed : Visibility.Visible;

@@ -6,14 +6,15 @@ namespace Vantrel.Security.Desktop.Tests;
 public sealed class DesktopSectionNavigationTests
 {
     [TestMethod]
-    public void Installation_is_a_workspace_that_refreshes_existing_status_data()
+    public void Installation_and_protection_are_workspaces_that_refresh_existing_status_data()
     {
         Assert.IsTrue(DesktopSectionNavigation.IsWorkspace("Installation"));
         Assert.IsTrue(DesktopSectionNavigation.RequiresStatusRefresh("Installation"));
+        Assert.IsTrue(DesktopSectionNavigation.IsWorkspace("Protection"));
+        Assert.IsTrue(DesktopSectionNavigation.RequiresStatusRefresh("Protection"));
     }
 
     [DataTestMethod]
-    [DataRow("Protection")]
     [DataRow("Network")]
     [DataRow("Quarantine")]
     [DataRow("Settings")]

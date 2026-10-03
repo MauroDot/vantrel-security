@@ -167,6 +167,25 @@
                                    Foreground="#A8B9C9" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
+                <Border x:Name="ProtectionPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14"
+                        Padding="26" BorderBrush="#29415B" BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock Text="PROTECTION OVERVIEW" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="ProtectionOverviewNoticeText" TextWrapping="Wrap" Margin="0,10,0,18"/>
+                        <TextBlock Text="SERVICE CONNECTION AND HEARTBEAT" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="ProtectionServiceText" TextWrapping="Wrap" Margin="0,8,0,16"/>
+                        <TextBlock Text="WINDOWS-REPORTED AGGREGATE ANTIVIRUS" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="ProtectionAntivirusText" TextWrapping="Wrap" Margin="0,8,0,16"/>
+                        <TextBlock Text="WINDOWS-REPORTED AGGREGATE FIREWALL" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="ProtectionFirewallText" TextWrapping="Wrap" Margin="0,8,0,16"/>
+                        <TextBlock Text="SIGNED INSTALLATION INTEGRITY" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="ProtectionInstallationText" TextWrapping="Wrap" Margin="0,8,0,16"/>
+                        <TextBlock Text="SIGNED RELEASE PROVENANCE AND LOCAL POLICY" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="ProtectionProvenanceText" TextWrapping="Wrap" Margin="0,8,0,16"/>
+                        <TextBlock Text="OFFLINE UPDATE TRANSACTION AND RECOVERY" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="ProtectionUpdateText" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                    </StackPanel>
+                </Border>
                 <Border x:Name="SystemHealthPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14"
                         Padding="26" BorderBrush="#29415B" BorderThickness="1">
                     <StackPanel>
