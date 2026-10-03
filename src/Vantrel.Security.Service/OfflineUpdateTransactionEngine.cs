@@ -180,7 +180,16 @@ internal sealed class OfflineUpdateTransactionEngine(IOfflineUpdatePreflight pre
 
     private async Task<UpdateTransactionPhase> VerifyConsumedRollbackAsync(UpdateTransactionJournal journal, CancellationToken token)
     {
-        try { await health.VerifyPredecessorAsync(journal, token); return (await MoveAsync(journal, UpdateTransactionPhase.RolledBack, token)).Phase; }
+        try
+        {
+            // Consumed is the crash-recovery continuation of a predecessor restore.
+            // Re-read the high-water policy before accepting that predecessor so this
+            // path retains the same downgrade boundary as a fresh rollback.
+            if (await health.ObservePolicyCommitAsync(journal, token) != PolicyCommitObservation.PredecessorRetained)
+                return (await MoveAsync(journal, UpdateTransactionPhase.RollbackRequired, token)).Phase;
+            await health.VerifyPredecessorAsync(journal, token);
+            return (await MoveAsync(journal, UpdateTransactionPhase.RolledBack, token)).Phase;
+        }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch { return (await MoveAsync(journal, UpdateTransactionPhase.RollbackRequired, token)).Phase; }
     }

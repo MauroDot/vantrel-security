@@ -434,6 +434,77 @@ public sealed class RollbackRecoveryPersistenceTests
         Assert.AreEqual(0, fixture.Service.StartCount);
     }
 
+    [TestMethod]
+    public async Task Consumed_recovery_accepts_only_a_running_cryptographic_predecessor()
+    {
+        await using var fixture = await DurableFixture.CreateAsync();
+        await fixture.InstallPredecessorAsync();
+        await fixture.PersistConsumedAsync();
+        var files = new NeverRestoreFiles(); var health = new ConsumedHealth(fixture, running: true);
+
+        Assert.AreEqual(UpdateTransactionPhase.RolledBack, await fixture.RecoverAsync(fixture.CreateEngine(files, health)));
+        await fixture.AssertDurablePhaseAsync(UpdateTransactionPhase.RolledBack);
+        Assert.AreEqual(1, health.PolicyReads); Assert.AreEqual(1, health.PredecessorVerifications);
+        Assert.AreEqual(0, files.RestoreCount); Assert.AreEqual(0, fixture.Service.StartCount);
+    }
+
+    [DataTestMethod]
+    [DataRow(false, false)]
+    [DataRow(true, true)]
+    public async Task Consumed_recovery_stopped_or_tampered_predecessor_returns_to_rollback_required(bool tamper, bool running)
+    {
+        await using var fixture = await DurableFixture.CreateAsync();
+        await fixture.InstallPredecessorAsync();
+        if (tamper) await fixture.TamperInstalledAsync();
+        await fixture.PersistConsumedAsync();
+        var files = new NeverRestoreFiles(); var health = new ConsumedHealth(fixture, running);
+
+        Assert.AreEqual(UpdateTransactionPhase.RollbackRequired, await fixture.RecoverAsync(fixture.CreateEngine(files, health)));
+        await fixture.AssertDurablePhaseAsync(UpdateTransactionPhase.RollbackRequired);
+        Assert.AreEqual(1, health.PolicyReads); Assert.AreEqual(1, health.PredecessorVerifications);
+        Assert.AreEqual(0, files.RestoreCount); Assert.AreEqual(0, fixture.Service.StartCount);
+    }
+
+    [DataTestMethod]
+    [DataRow("target")]
+    [DataRow("unavailable")]
+    [DataRow("corrupt")]
+    [DataRow("mismatch")]
+    public async Task Consumed_recovery_rejects_nonpredecessor_policy_before_health_restore_or_start(string policy)
+    {
+        await using var fixture = await DurableFixture.CreateAsync();
+        await fixture.InstallPredecessorAsync();
+        await fixture.PersistConsumedAsync();
+        await fixture.WritePolicyAsync(policy);
+        var policyBefore = await fixture.ReadPolicyBytesAsync();
+        var files = new NeverRestoreFiles(); var health = new ConsumedHealth(fixture, running: true);
+
+        Assert.AreEqual(UpdateTransactionPhase.RollbackRequired, await fixture.RecoverAsync(fixture.CreateEngine(files, health)));
+        await fixture.AssertDurablePhaseAsync(UpdateTransactionPhase.RollbackRequired);
+        Assert.AreEqual(1, health.PolicyReads); Assert.AreEqual(0, health.PredecessorVerifications);
+        Assert.AreEqual(0, files.RestoreCount); Assert.AreEqual(0, fixture.Service.StartCount);
+        CollectionAssert.AreEqual(policyBefore, await fixture.ReadPolicyBytesAsync());
+    }
+
+    [DataTestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task Consumed_recovery_cancellation_during_policy_or_predecessor_verification_retains_consumed(bool duringPolicy)
+    {
+        await using var fixture = await DurableFixture.CreateAsync();
+        await fixture.PersistConsumedAsync();
+        using var cancellation = new CancellationTokenSource();
+        var health = new BlockingConsumedHealth(duringPolicy);
+        var files = new NeverRestoreFiles();
+        var recovery = fixture.RecoverAsync(fixture.CreateEngine(files, health), cancellation.Token);
+        await health.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+
+        await Assert.ThrowsExceptionAsync<TaskCanceledException>(() => recovery);
+        await fixture.AssertDurablePhaseAsync(UpdateTransactionPhase.RollbackRestartConsumed);
+        Assert.AreEqual(0, files.RestoreCount); Assert.AreEqual(0, fixture.Service.StartCount);
+    }
+
     private sealed class DurableFixture : IAsyncDisposable
     {
         private readonly ECDsa _metadataKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -487,8 +558,8 @@ public sealed class RollbackRecoveryPersistenceTests
             return fixture;
         }
 
-        internal OfflineUpdateTransactionEngine CreateEngine(IOfflineUpdateReleaseFiles files) =>
-            new(new EmptyPreflight(), Service, files, Health, new JournalAdapter(Journals));
+        internal OfflineUpdateTransactionEngine CreateEngine(IOfflineUpdateReleaseFiles files, IOfflineUpdateHealth? health = null) =>
+            new(new EmptyPreflight(), Service, files, health ?? Health, new JournalAdapter(Journals));
 
         internal async Task<UpdateTransactionPhase> RecoverAsync(OfflineUpdateTransactionEngine engine, CancellationToken token = default)
         {
@@ -556,6 +627,29 @@ public sealed class RollbackRecoveryPersistenceTests
             var verified = await Verifier.VerifyChainAsync(Installed, CancellationToken.None);
             Assert.AreEqual(Journal.PriorReleaseSequence, verified.Sequence);
             Assert.AreEqual(Journal.PriorManifestSha256, verified.ManifestSha256);
+        }
+
+        internal async Task InstallPredecessorAsync()
+        {
+            foreach (var (name, bytes) in _backupBytes)
+                await File.WriteAllBytesAsync(Path.Combine(Installed, name), bytes);
+        }
+
+        internal async Task TamperInstalledAsync() =>
+            await File.AppendAllTextAsync(Path.Combine(Installed, FixedServiceReleaseFiles.Components[0].Name), "tamper");
+
+        internal async Task PersistConsumedAsync()
+        {
+            var current = (await Journals.ReadAsync(CancellationToken.None)).Journal!;
+            if (current.Phase != UpdateTransactionPhase.RollbackRequired)
+            {
+                current = UpdateTransactionStateMachine.Transition(current, UpdateTransactionPhase.RollbackRequired, current.UpdatedAtUtc.AddSeconds(1));
+                await Journals.PersistAsync(current, CancellationToken.None);
+            }
+            var authorized = UpdateTransactionStateMachine.Transition(current with { RecoveryStartNonce = "0123456789abcdef0123456789abcdef" },
+                UpdateTransactionPhase.RollbackRestartAuthorized, current.UpdatedAtUtc.AddSeconds(1));
+            await Journals.PersistAsync(authorized, CancellationToken.None);
+            Assert.IsNotNull(await Journals.TryConsumeRecoveryStartLeaseAsync(authorized.RecoveryStartNonce, CancellationToken.None));
         }
 
         internal async Task TamperBackupAsync() =>
@@ -690,6 +784,45 @@ public sealed class RollbackRecoveryPersistenceTests
             return durable.Record.HighestAcceptedReleaseSequence == journal.PriorReleaseSequence &&
                 string.Equals(durable.Record.AcceptedManifestSha256, journal.PriorManifestSha256, StringComparison.Ordinal)
                 ? PolicyCommitObservation.PredecessorRetained : PolicyCommitObservation.Unavailable;
+        }
+    }
+    private sealed class ConsumedHealth(DurableFixture fixture, bool running) : IOfflineUpdateHealth
+    {
+        internal int PolicyReads;
+        internal int PredecessorVerifications;
+        public Task VerifyTargetAsync(UpdateTransactionJournal journal, CancellationToken token) => Task.CompletedTask;
+        public async Task VerifyPredecessorAsync(UpdateTransactionJournal journal, CancellationToken token)
+        {
+            PredecessorVerifications++;
+            var verified = await fixture.Verifier.VerifyChainAsync(fixture.Installed, token);
+            if (!running || verified.Sequence != journal.PriorReleaseSequence ||
+                !string.Equals(verified.ManifestSha256, journal.PriorManifestSha256, StringComparison.Ordinal))
+                throw new IOException("Test predecessor health failed.");
+        }
+        public async Task<PolicyCommitObservation> ObservePolicyCommitAsync(UpdateTransactionJournal journal, CancellationToken token)
+        {
+            PolicyReads++;
+            var durable = await fixture.Policy.ReadDurableAsync(token);
+            if (durable.Failure != ReleasePolicyParseFailure.None || durable.Record is null) return PolicyCommitObservation.Unavailable;
+            if (durable.Record.HighestAcceptedReleaseSequence == journal.TargetReleaseSequence &&
+                string.Equals(durable.Record.AcceptedManifestSha256, journal.TargetManifestSha256, StringComparison.Ordinal)) return PolicyCommitObservation.TargetCommitted;
+            return durable.Record.HighestAcceptedReleaseSequence == journal.PriorReleaseSequence &&
+                string.Equals(durable.Record.AcceptedManifestSha256, journal.PriorManifestSha256, StringComparison.Ordinal)
+                ? PolicyCommitObservation.PredecessorRetained : PolicyCommitObservation.Unavailable;
+        }
+    }
+    private sealed class BlockingConsumedHealth(bool duringPolicy) : IOfflineUpdateHealth
+    {
+        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task VerifyTargetAsync(UpdateTransactionJournal journal, CancellationToken token) => Task.CompletedTask;
+        public async Task VerifyPredecessorAsync(UpdateTransactionJournal journal, CancellationToken token)
+        {
+            if (!duringPolicy) { Entered.TrySetResult(); await Task.Delay(Timeout.InfiniteTimeSpan, token); }
+        }
+        public async Task<PolicyCommitObservation> ObservePolicyCommitAsync(UpdateTransactionJournal journal, CancellationToken token)
+        {
+            if (duringPolicy) { Entered.TrySetResult(); await Task.Delay(Timeout.InfiniteTimeSpan, token); }
+            return PolicyCommitObservation.PredecessorRetained;
         }
     }
 
