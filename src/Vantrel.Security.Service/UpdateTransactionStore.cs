@@ -6,6 +6,7 @@ namespace Vantrel.Security.Service;
 
 internal enum JournalReadState { Present, Absent, MissingInfrastructure, Invalid }
 internal enum PostVerifiedPolicyHandoffResult { Completed, NotEligible }
+internal enum TerminalTransactionRetirementResult { Retired, NotEligible }
 
 internal sealed record JournalReadResult(UpdateTransactionJournal? Journal,
     UpdateTransactionJournalParseFailure Failure, JournalReadState State)
@@ -139,6 +140,42 @@ public sealed class UpdateTransactionJournalStore
         finally { _gate.Release(); }
     }
 
+    /// <summary>
+    /// Retires only an exact terminal transaction after its elevated owner has acquired
+    /// the separate operation boundary. Artifacts are removed while the journal lock is
+    /// held; the journal is deleted last and only when Transactions contains no residue.
+    /// </summary>
+    internal async Task<TerminalTransactionRetirementResult> TryRetireTerminalTransactionAsync(UpdateTransactionJournal expected,
+        OfflineUpdateOwnershipLease ownership, Func<UpdateTransactionJournal, CancellationToken, Task> retireArtifacts, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        ArgumentNullException.ThrowIfNull(ownership);
+        ArgumentNullException.ThrowIfNull(retireArtifacts);
+        token.ThrowIfCancellationRequested();
+        ownership.RequireHeldFor(_updatesRoot);
+        RequireProvisionedInfrastructure();
+        await using var interprocess = await AcquireInterprocessLockAsync(token);
+        await _gate.WaitAsync(token);
+        try
+        {
+            if (!File.Exists(_journalPath)) return TerminalTransactionRetirementResult.NotEligible;
+            RejectReparse(_journalPath);
+            var bytes = await File.ReadAllBytesAsync(_journalPath, token);
+            if (!UpdateTransactionJournalCodec.TryParse(bytes, out var current, out var failure) || current is null)
+                throw new IOException("Existing update transaction journal is invalid: " + failure);
+            if (current != expected || current.Phase is not (UpdateTransactionPhase.Completed or UpdateTransactionPhase.RolledBack or UpdateTransactionPhase.Failed))
+                return TerminalTransactionRetirementResult.NotEligible;
+            await retireArtifacts(current, token);
+            EnsureTerminalTransactionEntriesAreRetired();
+            RejectReparse(_journalPath);
+            File.Delete(_journalPath);
+            if (File.Exists(_journalPath))
+                throw new IOException("Terminal update journal retirement was incomplete.");
+            return TerminalTransactionRetirementResult.Retired;
+        }
+        finally { _gate.Release(); }
+    }
+
     /// <summary>Consumes the one fixed recovery-start capability before any hosted worker is admitted.</summary>
     internal async Task<bool> TryConsumeRecoveryStartAsync(string? nonce, CancellationToken token)
         => await TryConsumeRecoveryStartLeaseAsync(nonce, token) is not null;
@@ -253,6 +290,18 @@ public sealed class UpdateTransactionJournalStore
         left.TransactionId == right.TransactionId && left.BackupId == right.BackupId &&
         left.PriorReleaseSequence == right.PriorReleaseSequence && left.PriorManifestSha256 == right.PriorManifestSha256 &&
         left.TargetReleaseSequence == right.TargetReleaseSequence && left.TargetManifestSha256 == right.TargetManifestSha256;
+
+    private void EnsureTerminalTransactionEntriesAreRetired()
+    {
+        foreach (var entry in Directory.EnumerateFileSystemEntries(_transactionsRoot))
+        {
+            if (!PathsEqual(entry, _journalPath))
+                throw new IOException("Unexpected transaction entry prevents terminal retirement.");
+        }
+    }
+
+    private static bool PathsEqual(string left, string right) => string.Equals(Path.GetFullPath(left), Path.GetFullPath(right),
+        StringComparison.OrdinalIgnoreCase);
     private static void ApplyDirectoryAcl(string path)
     {
         if (!OperatingSystem.IsWindows()) return;

@@ -7,14 +7,18 @@ public enum OfflineUpdateInvocationResult { Completed, Failed, AlreadyInProgress
 /// <summary>Single fixed elevated entry point. It accepts no paths, versions, identifiers, or service names.</summary>
 public sealed class OfflineUpdateAdministrator
 {
+    private delegate Task<UpdateTransactionPhase> FixedOperation(OfflineUpdateOwnershipLease? ownership, CancellationToken token);
     private static readonly SemaphoreSlim ProductionGate = new(1, 1);
-    private readonly Func<CancellationToken, Task<UpdateTransactionPhase>> _fixedOperation;
+    private readonly FixedOperation _fixedOperation;
     private readonly SemaphoreSlim _gate;
     private readonly IOfflineUpdateOwnershipLock? _ownershipLock;
 
     public OfflineUpdateAdministrator() : this(ExecuteFixedAsync, ProductionGate, new OfflineUpdateOwnershipLock()) { }
     internal OfflineUpdateAdministrator(Func<CancellationToken, Task<UpdateTransactionPhase>> fixedOperation, SemaphoreSlim? gate = null,
         IOfflineUpdateOwnershipLock? ownershipLock = null)
+        : this((_, token) => fixedOperation(token), gate, ownershipLock) { }
+
+    private OfflineUpdateAdministrator(FixedOperation fixedOperation, SemaphoreSlim? gate, IOfflineUpdateOwnershipLock? ownershipLock)
     {
         _fixedOperation = fixedOperation ?? throw new ArgumentNullException(nameof(fixedOperation));
         _gate = gate ?? ProductionGate;
@@ -25,21 +29,21 @@ public sealed class OfflineUpdateAdministrator
     {
         token.ThrowIfCancellationRequested();
         if (!_gate.Wait(0)) return OfflineUpdateInvocationResult.AlreadyInProgress;
-        IDisposable? ownership = null;
+        OfflineUpdateOwnershipLease? ownership = null;
         try
         {
             ownership = _ownershipLock?.TryAcquire(token);
             if (_ownershipLock is not null && ownership is null) return OfflineUpdateInvocationResult.AlreadyInProgress;
-            return await _fixedOperation(token) == UpdateTransactionPhase.Completed ? OfflineUpdateInvocationResult.Completed : OfflineUpdateInvocationResult.Failed;
+            return await _fixedOperation(ownership, token) == UpdateTransactionPhase.Completed ? OfflineUpdateInvocationResult.Completed : OfflineUpdateInvocationResult.Failed;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch { return OfflineUpdateInvocationResult.Failed; }
         finally { ownership?.Dispose(); _gate.Release(); }
     }
-    private static async Task<UpdateTransactionPhase> ExecuteFixedAsync(CancellationToken token)
+    private static async Task<UpdateTransactionPhase> ExecuteFixedAsync(OfflineUpdateOwnershipLease? ownership, CancellationToken token)
     {
         var journals = new UpdateTransactionJournalStore();
-        return await WithValidatedJournalAsync(journals, existing => ExecuteValidatedAsync(journals, existing, token), token);
+        return await WithValidatedJournalAsync(journals, existing => ExecuteValidatedAsync(journals, existing, ownership, token), token);
     }
 
     // The continuation includes both recovery and new admission. It is unreachable
@@ -54,8 +58,18 @@ public sealed class OfflineUpdateAdministrator
     }
 
     private static async Task<UpdateTransactionPhase> ExecuteValidatedAsync(UpdateTransactionJournalStore journals,
-        UpdateTransactionJournal? existing, CancellationToken token)
+        UpdateTransactionJournal? existing, OfflineUpdateOwnershipLease? ownership, CancellationToken token)
     {
+        if (existing?.Phase is UpdateTransactionPhase.Completed or UpdateTransactionPhase.RolledBack or UpdateTransactionPhase.Failed)
+        {
+            if (ownership is null) throw new IOException("Elevated update ownership is required for terminal transaction retirement.");
+            var terminalStorage = new OfflineUpdateStorage();
+            var retirement = await journals.TryRetireTerminalTransactionAsync(existing, ownership,
+                (journal, cancellationToken) => terminalStorage.RetireTerminalArtifactsAsync(journal, cancellationToken), token);
+            if (retirement != TerminalTransactionRetirementResult.Retired)
+                throw new IOException("Terminal update transaction could not be retired safely.");
+            return existing.Phase;
+        }
         var verifier = new OfflineReleaseVerifier(); var policy = new ReleasePolicyStore(); var storage = new OfflineUpdateStorage();
         var control = new WindowsVantrelServiceControl(); var health = new FixedReleaseHealthVerifier(control, verifier, policy);
         var engine = new OfflineUpdateTransactionEngine(new FixedOfflineUpdatePreflight(verifier, policy, storage), control,

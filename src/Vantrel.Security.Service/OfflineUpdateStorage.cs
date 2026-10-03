@@ -58,6 +58,19 @@ internal sealed class OfflineUpdateStorage
         await CopyExactReleaseAsync(_installedRoot, Backup(backupId), token, _applyAcls, allowLocalService: false, _operations);
     }
 
+    /// <summary>Deletes only complete, journal-bound terminal artifacts. It never creates paths or removes staging, policy, or locks.</summary>
+    internal Task RetireTerminalArtifactsAsync(UpdateTransactionJournal journal, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        if (journal.Phase is not (UpdateTransactionPhase.Completed or UpdateTransactionPhase.RolledBack or UpdateTransactionPhase.Failed))
+            throw new InvalidOperationException("Only terminal update artifacts may be retired.");
+        token.ThrowIfCancellationRequested();
+        RetirePrivateCandidate(journal.TransactionId);
+        token.ThrowIfCancellationRequested();
+        RetireExactReleaseDirectory(_backupsRoot, Backup(journal.BackupId));
+        return Task.CompletedTask;
+    }
+
     // Internal test-only fault callback; production paths always pass null.
     internal static Task CopyExactReleaseForTestAsync(string source, string destination, Func<int, bool>? failBeforeCopy, CancellationToken token) =>
         CopyExactReleaseAsync(source, destination, token, applyAcls: false, allowLocalService: false, WindowsOfflineUpdateFileOperations.Instance, fault: failBeforeCopy);
@@ -115,6 +128,93 @@ internal sealed class OfflineUpdateStorage
             File.Delete(entry);
         }
         Directory.Delete(destination, recursive: false);
+    }
+
+    private void RetirePrivateCandidate(string transactionId)
+    {
+        var transaction = Child(_transactionsRoot, transactionId);
+        ValidatePath(_transactionsRoot, transaction, allowMissing: true, requireDirectory: true);
+        if (!Directory.Exists(transaction)) return;
+        RetireExactReleaseDirectory(transaction, PrivateCandidate(transactionId));
+        EnsureDirectoryEmptyAndDelete(transaction);
+    }
+
+    private static void RetireExactReleaseDirectory(string root, string directory)
+    {
+        ValidatePath(root, directory, allowMissing: true, requireDirectory: true);
+        if (!Directory.Exists(directory)) return;
+        var expected = new HashSet<string>(FixedServiceReleaseFiles.AllNames, StringComparer.Ordinal);
+        var entries = Directory.EnumerateFileSystemEntries(directory).ToArray();
+        foreach (var entry in entries)
+        {
+            var name = Path.GetFileName(entry);
+            var attributes = File.GetAttributes(entry); RejectReparseAttributes(attributes);
+            if ((attributes & FileAttributes.Directory) != 0 || !expected.Remove(name))
+                throw new IOException("Terminal artifact directory has an unsafe entry.");
+            File.Delete(entry);
+        }
+        Directory.Delete(directory, recursive: false);
+    }
+
+    private static void EnsureDirectoryEmptyAndDelete(string directory)
+    {
+        ValidatePath(Directory.GetParent(directory)!.FullName, directory, allowMissing: false, requireDirectory: true);
+        if (Directory.EnumerateFileSystemEntries(directory).Any())
+            throw new IOException("Terminal transaction directory has unexpected entries.");
+        Directory.Delete(directory, recursive: false);
+    }
+
+    private static void ValidatePath(string root, string path, bool allowMissing, bool requireDirectory)
+    {
+        EnsureContained(root, path);
+        root = Path.GetFullPath(root); path = Path.GetFullPath(path);
+        FileAttributes rootAttributes;
+        try { rootAttributes = File.GetAttributes(root); }
+        catch (FileNotFoundException) when (allowMissing) { ValidateExistingAncestors(root); return; }
+        catch (DirectoryNotFoundException) when (allowMissing) { ValidateExistingAncestors(root); return; }
+        RejectReparseAttributes(rootAttributes);
+        if ((rootAttributes & FileAttributes.Directory) == 0) throw new IOException("Terminal artifact root is not a directory.");
+        var relative = Path.GetRelativePath(root, path);
+        var current = root;
+        foreach (var segment in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (string.IsNullOrEmpty(segment) || segment == ".") continue;
+            current = Path.Combine(current, segment);
+            FileAttributes attributes;
+            try { attributes = File.GetAttributes(current); }
+            catch (FileNotFoundException) when (allowMissing) { ValidateExistingAncestors(current); return; }
+            catch (DirectoryNotFoundException) when (allowMissing) { ValidateExistingAncestors(current); return; }
+            RejectReparseAttributes(attributes);
+            if ((attributes & FileAttributes.Directory) == 0)
+                throw new IOException("Terminal artifact path is not a directory.");
+        }
+        if (requireDirectory && !Directory.Exists(path)) throw new IOException("Terminal artifact directory is unavailable.");
+    }
+
+    private static void RejectReparseAttributes(FileAttributes attributes)
+    {
+        if ((attributes & FileAttributes.ReparsePoint) != 0) throw new IOException("Terminal artifact reparse point rejected.");
+    }
+
+    private static void ValidateExistingAncestors(string path)
+    {
+        var current = new DirectoryInfo(Path.GetFullPath(path));
+        while (true)
+        {
+            try
+            {
+                var attributes = File.GetAttributes(current.FullName); RejectReparseAttributes(attributes);
+                if ((attributes & FileAttributes.Directory) == 0) throw new IOException("Terminal artifact ancestor is not a directory.");
+                break;
+            }
+            catch (FileNotFoundException) { current = current.Parent ?? throw new IOException("Terminal artifact ancestor is unavailable."); }
+            catch (DirectoryNotFoundException) { current = current.Parent ?? throw new IOException("Terminal artifact ancestor is unavailable."); }
+        }
+        for (; current is not null; current = current.Parent)
+        {
+            var attributes = File.GetAttributes(current.FullName); RejectReparseAttributes(attributes);
+            if ((attributes & FileAttributes.Directory) == 0) throw new IOException("Terminal artifact ancestor is not a directory.");
+        }
     }
 
     private static string ValidateRoot(string path, string parameterName)

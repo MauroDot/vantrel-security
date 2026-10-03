@@ -9,7 +9,29 @@ namespace Vantrel.Security.Service;
 /// </summary>
 internal interface IOfflineUpdateOwnershipLock
 {
-    IDisposable? TryAcquire(CancellationToken token);
+    OfflineUpdateOwnershipLease? TryAcquire(CancellationToken token);
+}
+
+/// <summary>Non-forgeable in-assembly capability representing the held fixed owner file.</summary>
+internal sealed class OfflineUpdateOwnershipLease : IDisposable
+{
+    private FileStream? _stream;
+    private readonly string _updatesRoot;
+
+    internal OfflineUpdateOwnershipLease(FileStream stream, string updatesRoot)
+    {
+        _stream = stream ?? throw new ArgumentNullException(nameof(stream));
+        _updatesRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(updatesRoot));
+    }
+
+    internal void RequireHeldFor(string updatesRoot)
+    {
+        if (Volatile.Read(ref _stream) is null || !string.Equals(_updatesRoot,
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(updatesRoot)), StringComparison.OrdinalIgnoreCase))
+            throw new IOException("Offline update ownership is not held for this storage root.");
+    }
+
+    public void Dispose() => Interlocked.Exchange(ref _stream, null)?.Dispose();
 }
 
 internal sealed class OfflineUpdateOwnershipLock : IOfflineUpdateOwnershipLock
@@ -30,13 +52,14 @@ internal sealed class OfflineUpdateOwnershipLock : IOfflineUpdateOwnershipLock
         _applyAcls = applyAcls;
     }
 
-    public IDisposable? TryAcquire(CancellationToken token)
+    public OfflineUpdateOwnershipLease? TryAcquire(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         RequireProvisionedInfrastructure();
         try
         {
-            return new FileStream(_ownerLockPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None, 1, FileOptions.WriteThrough);
+            return new OfflineUpdateOwnershipLease(new FileStream(_ownerLockPath, FileMode.Open, FileAccess.ReadWrite,
+                FileShare.None, 1, FileOptions.WriteThrough), _updatesRoot);
         }
         catch (IOException error) when (IsContention(error))
         {
