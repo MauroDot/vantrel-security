@@ -10,10 +10,13 @@ internal enum PolicyCommitObservation
     Unavailable
 }
 
+internal enum OfflineUpdateServiceState { Running, Stopped, Unavailable }
+
 internal interface IOfflineUpdatePreflight
 {
     Task VerifyCandidateAndBaselineAsync(UpdateTransactionJournal journal, CancellationToken token);
     Task CreateAndVerifyPredecessorBackupAsync(UpdateTransactionJournal journal, CancellationToken token);
+    Task VerifyInstalledPredecessorAsync(UpdateTransactionJournal journal, CancellationToken token) => Task.CompletedTask;
 }
 internal interface IOfflineUpdateServiceControl
 {
@@ -21,6 +24,7 @@ internal interface IOfflineUpdateServiceControl
     Task StartAsync(CancellationToken token);
     Task StartRecoveryAsync(string nonce, CancellationToken token) => StartAsync(token);
     Task RequireStoppedAsync(CancellationToken token);
+    Task<OfflineUpdateServiceState> InspectStateAsync(CancellationToken token) => Task.FromResult(OfflineUpdateServiceState.Unavailable);
 }
 internal interface IOfflineUpdateReleaseFiles
 {
@@ -36,6 +40,7 @@ internal interface IOfflineUpdateHealth
 internal interface IOfflineUpdateJournal
 {
     Task PersistAsync(UpdateTransactionJournal journal, CancellationToken token);
+    Task<bool> IsExactCurrentAsync(UpdateTransactionJournal journal, CancellationToken token) => Task.FromResult(true);
 }
 
 /// <summary>Failure-injectable transaction coordinator. It has no generic command, path, service, or file inputs.</summary>
@@ -76,7 +81,8 @@ internal sealed class OfflineUpdateTransactionEngine(IOfflineUpdatePreflight pre
 
     internal async Task<UpdateTransactionPhase> RecoverAsync(UpdateTransactionJournal journal, CancellationToken token) => journal.Phase switch
     {
-        UpdateTransactionPhase.Prepared or UpdateTransactionPhase.Verified => journal.Phase,
+        UpdateTransactionPhase.Prepared => await ClosePreparedAsync(journal, token),
+        UpdateTransactionPhase.Verified => await CloseVerifiedAsync(journal, token),
         UpdateTransactionPhase.ServiceStopped or UpdateTransactionPhase.RollbackRequired or UpdateTransactionPhase.RollbackRestartAuthorized => await RollbackAsync(journal, token),
         UpdateTransactionPhase.RollbackRestartConsumed => await VerifyConsumedRollbackAsync(journal, token),
         UpdateTransactionPhase.Replaced => await ContinueFromReplacedAsync(journal, token),
@@ -87,6 +93,37 @@ internal sealed class OfflineUpdateTransactionEngine(IOfflineUpdatePreflight pre
         UpdateTransactionPhase.Completed or UpdateTransactionPhase.Failed => journal.Phase,
         _ => throw new InvalidOperationException("Unexpected transaction recovery phase.")
     };
+
+    private async Task<UpdateTransactionPhase> ClosePreparedAsync(UpdateTransactionJournal journal, CancellationToken token)
+    {
+        if (!await journalStore.IsExactCurrentAsync(journal, token)) return journal.Phase;
+        return await PersistTerminalFailureAsync(journal, token);
+    }
+
+    private async Task<UpdateTransactionPhase> CloseVerifiedAsync(UpdateTransactionJournal journal, CancellationToken token)
+    {
+        if (!await journalStore.IsExactCurrentAsync(journal, token)) return journal.Phase;
+        try
+        {
+            var state = await service.InspectStateAsync(token);
+            await preflight.VerifyInstalledPredecessorAsync(journal, token);
+            if (state == OfflineUpdateServiceState.Running) return await PersistTerminalFailureAsync(journal, token);
+            if (state != OfflineUpdateServiceState.Stopped) throw new IOException("Fixed service state is unavailable for verified transaction recovery.");
+            await service.StartAsync(token);
+            await health.VerifyPredecessorAsync(journal, token);
+            return await PersistTerminalFailureAsync(journal, token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch { return (await MoveAsync(journal, UpdateTransactionPhase.RollbackRequired, token)).Phase; }
+    }
+
+    private async Task<UpdateTransactionPhase> PersistTerminalFailureAsync(UpdateTransactionJournal journal, CancellationToken token)
+    {
+        // This is the only cancellation boundary for a successful pre-replacement close.
+        // After it, durable write and canonical readback must finish as one outcome.
+        token.ThrowIfCancellationRequested();
+        return await PersistFailedAsync(journal, CancellationToken.None);
+    }
 
     private async Task<UpdateTransactionPhase> FinalizeCommittedAsync(UpdateTransactionJournal journal, CancellationToken token)
     {

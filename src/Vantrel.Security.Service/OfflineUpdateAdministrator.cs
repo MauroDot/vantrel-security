@@ -95,5 +95,6 @@ public sealed class OfflineUpdateAdministrator
     private sealed class JournalAdapter(UpdateTransactionJournalStore store) : IOfflineUpdateJournal
     {
         public Task PersistAsync(UpdateTransactionJournal journal, CancellationToken token) => store.PersistAsync(journal, token);
+        public Task<bool> IsExactCurrentAsync(UpdateTransactionJournal journal, CancellationToken token) => store.IsExactCurrentAsync(journal, token);
     }
 }

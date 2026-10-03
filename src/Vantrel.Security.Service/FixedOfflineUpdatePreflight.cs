@@ -7,10 +7,7 @@ internal sealed class FixedOfflineUpdatePreflight(OfflineReleaseVerifier verifie
 {
     public async Task VerifyCandidateAndBaselineAsync(UpdateTransactionJournal journal, CancellationToken token)
     {
-        var baseline = await verifier.VerifyInstalledBaselineAsync(storage.InstalledRoot, policy, token);
-        if (baseline.Result != OfflineReleaseVerificationResult.Verified || baseline.Release is null ||
-            baseline.Release.Sequence != journal.PriorReleaseSequence || !string.Equals(baseline.Release.ManifestSha256, journal.PriorManifestSha256, StringComparison.Ordinal))
-            throw new IOException("Installed predecessor baseline is not the journal predecessor.");
+        await VerifyInstalledPredecessorAsync(journal, token);
 
         var staged = await verifier.VerifyCandidateAsync(storage.StagedCandidate, policy, token);
         if (!MatchesJournalTarget(staged, journal))
@@ -20,6 +17,14 @@ internal sealed class FixedOfflineUpdatePreflight(OfflineReleaseVerifier verifie
         var candidate = await verifier.VerifyCandidateAsync(storage.PrivateCandidate(journal.TransactionId), policy, token);
         if (!MatchesJournalTarget(candidate, journal))
             throw new IOException("Fixed private candidate is not the journal target.");
+    }
+
+    public async Task VerifyInstalledPredecessorAsync(UpdateTransactionJournal journal, CancellationToken token)
+    {
+        var baseline = await verifier.VerifyInstalledBaselineAsync(storage.InstalledRoot, policy, token);
+        if (baseline.Result != OfflineReleaseVerificationResult.Verified || baseline.Release is null ||
+            baseline.Release.Sequence != journal.PriorReleaseSequence || !string.Equals(baseline.Release.ManifestSha256, journal.PriorManifestSha256, StringComparison.Ordinal))
+            throw new IOException("Installed predecessor baseline is not the journal predecessor.");
     }
 
     public async Task CreateAndVerifyPredecessorBackupAsync(UpdateTransactionJournal journal, CancellationToken token)

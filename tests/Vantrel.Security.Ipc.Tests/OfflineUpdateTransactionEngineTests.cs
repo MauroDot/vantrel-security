@@ -89,8 +89,8 @@ public sealed class OfflineUpdateTransactionEngineTests
         Assert.AreEqual(UpdateTransactionPhase.Failed, await engine.RecoverAsync(committed, CancellationToken.None));
     }
     [DataTestMethod]
-    [DataRow(UpdateTransactionPhase.Prepared, UpdateTransactionPhase.Prepared, false)]
-    [DataRow(UpdateTransactionPhase.Verified, UpdateTransactionPhase.Verified, false)]
+    [DataRow(UpdateTransactionPhase.Prepared, UpdateTransactionPhase.Failed, false)]
+    [DataRow(UpdateTransactionPhase.Verified, UpdateTransactionPhase.Failed, false)]
     [DataRow(UpdateTransactionPhase.ServiceStopped, UpdateTransactionPhase.RolledBack, false)]
     [DataRow(UpdateTransactionPhase.Replaced, UpdateTransactionPhase.Completed, true)]
     [DataRow(UpdateTransactionPhase.Restarted, UpdateTransactionPhase.Completed, true)]
@@ -191,7 +191,7 @@ public sealed class OfflineUpdateTransactionEngineTests
         public Task RequireStoppedAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); return Task.CompletedTask; }
         internal List<UpdateTransactionPhase> Phases { get; } = []; internal bool ThrowOnCandidateVerification; internal bool ThrowOnBackupVerification; internal bool ThrowOnTargetHealth; internal int StopCount; internal int ReplaceCount; internal UpdateTransactionPhase? ThrowOnPersistPhase; internal int RestoreCount; internal int PredecessorHealthCount; internal PolicyCommitObservation PolicyObservation = PolicyCommitObservation.Unavailable;
         public Task VerifyCandidateAndBaselineAsync(UpdateTransactionJournal journal, CancellationToken token) { if (ThrowOnCandidateVerification) throw new IOException(); return Task.CompletedTask; } public Task CreateAndVerifyPredecessorBackupAsync(UpdateTransactionJournal journal, CancellationToken token) { if (ThrowOnBackupVerification) throw new IOException(); return Task.CompletedTask; }
-        public Task StopAsync(CancellationToken token) { StopCount++; return Task.CompletedTask; } public Task StartAsync(CancellationToken token) => Task.CompletedTask; public Task ReplaceFromVerifiedPrivateCandidateAsync(UpdateTransactionJournal journal, CancellationToken token) { ReplaceCount++; return Task.CompletedTask; }
+        public Task StopAsync(CancellationToken token) { StopCount++; return Task.CompletedTask; } public Task StartAsync(CancellationToken token) => Task.CompletedTask; public Task<OfflineUpdateServiceState> InspectStateAsync(CancellationToken token) => Task.FromResult(OfflineUpdateServiceState.Running); public Task ReplaceFromVerifiedPrivateCandidateAsync(UpdateTransactionJournal journal, CancellationToken token) { ReplaceCount++; return Task.CompletedTask; }
         public Task RestoreVerifiedPredecessorAsync(UpdateTransactionJournal journal, CancellationToken token) { RestoreCount++; return Task.CompletedTask; }
         public Task VerifyTargetAsync(UpdateTransactionJournal journal, CancellationToken token) { if (ThrowOnTargetHealth) throw new IOException(); return Task.CompletedTask; }
         public Task VerifyPredecessorAsync(UpdateTransactionJournal journal, CancellationToken token) { PredecessorHealthCount++; return Task.CompletedTask; } public Task<PolicyCommitObservation> ObservePolicyCommitAsync(UpdateTransactionJournal journal, CancellationToken token) => Task.FromResult(PolicyObservation);

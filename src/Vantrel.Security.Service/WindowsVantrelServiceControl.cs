@@ -17,11 +17,21 @@ internal sealed class WindowsVantrelServiceControl : IOfflineUpdateServiceContro
 
     public async Task RequireStoppedAsync(CancellationToken token)
     {
+        if (await InspectStateAsync(token) != OfflineUpdateServiceState.Stopped)
+            throw new IOException("Fixed service must be stopped before rollback restore.");
+    }
+
+    public async Task<OfflineUpdateServiceState> InspectStateAsync(CancellationToken token)
+    {
         token.ThrowIfCancellationRequested();
         var state = await _readState(token).WaitAsync(Timeout, token);
         token.ThrowIfCancellationRequested();
-        if (state != ServiceControllerStatus.Stopped)
-            throw new IOException("Fixed service must be stopped before rollback restore.");
+        return state switch
+        {
+            ServiceControllerStatus.Running => OfflineUpdateServiceState.Running,
+            ServiceControllerStatus.Stopped => OfflineUpdateServiceState.Stopped,
+            _ => OfflineUpdateServiceState.Unavailable
+        };
     }
 
     private static Task<ServiceControllerStatus> ReadFixedStateAsync(CancellationToken token) => Task.Run(() =>

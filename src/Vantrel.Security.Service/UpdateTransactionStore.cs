@@ -33,9 +33,10 @@ public sealed class UpdateTransactionJournalStore
     private readonly bool _applyAcls;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly string _lockPath;
+    private readonly Func<CancellationToken, Task>? _afterJournalReplacementForTest;
 
     public UpdateTransactionJournalStore() : this(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Vantrel Security"), true) { }
-    internal UpdateTransactionJournalStore(string vantrelRoot, bool applyAcls = true)
+    internal UpdateTransactionJournalStore(string vantrelRoot, bool applyAcls = true, Func<CancellationToken, Task>? afterJournalReplacementForTest = null)
     {
         var root = Path.GetFullPath(vantrelRoot);
         _updatesRoot = Path.Combine(root, "Updates");
@@ -43,6 +44,7 @@ public sealed class UpdateTransactionJournalStore
         _journalPath = Path.Combine(_transactionsRoot, JournalFileName);
         _applyAcls = applyAcls;
         _lockPath = Path.Combine(_updatesRoot, LockFileName);
+        _afterJournalReplacementForTest = afterJournalReplacementForTest;
     }
 
     internal async Task<JournalReadResult> ReadAsync(CancellationToken token)
@@ -102,6 +104,26 @@ public sealed class UpdateTransactionJournalStore
         try
         {
             await PersistLockedAsync(journal, token);
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>Rechecks an administrator's exact journal view under the mandatory lock before pre-replacement recovery acts.</summary>
+    internal async Task<bool> IsExactCurrentAsync(UpdateTransactionJournal expected, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        token.ThrowIfCancellationRequested();
+        RequireProvisionedInfrastructure();
+        await using var interprocess = await AcquireInterprocessLockAsync(token);
+        await _gate.WaitAsync(token);
+        try
+        {
+            if (!File.Exists(_journalPath)) return false;
+            RejectReparse(_journalPath);
+            var bytes = await File.ReadAllBytesAsync(_journalPath, token);
+            if (!UpdateTransactionJournalCodec.TryParse(bytes, out var current, out var failure) || current is null)
+                throw new IOException("Existing update transaction journal is invalid: " + failure);
+            return current == expected;
         }
         finally { _gate.Release(); }
     }
@@ -280,6 +302,7 @@ public sealed class UpdateTransactionJournalStore
             if (replaced) { RejectReparse(_journalPath); File.Replace(temporary, _journalPath, null); } else File.Move(temporary, _journalPath, false);
             RejectReparse(_journalPath);
             if (_applyAcls) { ApplyFileAcl(_journalPath); if (replaced) { var validation = UpdateFilesystemSecurity.ValidateLocalServiceReplacedMutableFileOnDisk(new FileInfo(_journalPath)); if (!validation.IsMatch) throw new IOException("LocalService-replaced journal descriptor verification failed: " + validation.Mismatch); } }
+            if (_afterJournalReplacementForTest is not null) await _afterJournalReplacementForTest(token);
             var check = await File.ReadAllBytesAsync(_journalPath, token);
             if (!UpdateTransactionJournalCodec.TryParse(check, out var parsed, out var failure) || parsed != journal) throw new IOException("Update transaction journal verification failed: " + failure);
         }
