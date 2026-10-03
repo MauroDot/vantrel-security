@@ -22,7 +22,7 @@ public sealed class CommandPipeIntegrationTests
         Assert.AreEqual(0, fixture.Collections);
         Assert.IsTrue(fixture.WorkerIsAlive, "The rejected client faulted the command worker.");
 
-        var response = await fixture.SendEventuallyAsync("0123456789abcdef0123456789abcdef");
+        var response = await fixture.SendAsync("0123456789abcdef0123456789abcdef");
         Assert.AreEqual(CommandResult.Accepted, response.Result);
         await fixture.WaitForIdleAsync();
         Assert.AreEqual(1, fixture.Collections);
@@ -53,6 +53,8 @@ public sealed class CommandPipeIntegrationTests
         await fixture.ConnectAndCloseAsync();
         var response = await fixture.SendAsync("1123456789abcdef0123456789abcdef");
         Assert.AreEqual(CommandResult.Accepted, response.Result);
+        await fixture.WaitForIdleAsync();
+        Assert.AreEqual(1, fixture.Collections);
     }
 
     [TestMethod]

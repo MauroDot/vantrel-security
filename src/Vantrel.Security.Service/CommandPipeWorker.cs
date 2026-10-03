@@ -43,13 +43,18 @@ public sealed class CommandPipeWorker : BackgroundService
                     var caller = CommandCallerAuthorizer.Classify(pipe); // RunAsClient returns before admission or collection.
                     if (!CommandCallerAuthorizer.Authorized(caller))
                     {
-                        audit.Add(requestId, caller, CommandAuditOutcome.Rejected); await Reply(pipe, requestId, CommandResult.Rejected, CommandFailureReason.Unauthorized, timeout.Token); LogReject("Unauthorized"); continue;
+                        audit.Add(requestId, caller, CommandAuditOutcome.Rejected);
+                        await Reply(pipe, requestId, CommandResult.Rejected, CommandFailureReason.Unauthorized, timeout.Token);
+                        await WaitForClientEofAsync(pipe, timeout.Token);
+                        LogReject("Unauthorized");
+                        continue;
                     }
                     // Admission and reservation are one critical section: an in-progress result never consumes capacity.
                     var result = registry.AdmitAndReserve(requestId, () => coordinator.TryRefreshCommand(requestId, caller));
                     var reason = result == CommandResult.Rejected ? CommandFailureReason.RateLimited : CommandFailureReason.None;
                     audit.Add(requestId, caller, result switch { CommandResult.Accepted => CommandAuditOutcome.Accepted, CommandResult.AlreadyInProgress => CommandAuditOutcome.AlreadyInProgress, CommandResult.Duplicate => CommandAuditOutcome.Duplicate, CommandResult.Rejected => CommandAuditOutcome.RateLimited, _ => CommandAuditOutcome.Rejected });
                     await Reply(pipe, requestId, result, reason, timeout.Token);
+                    await WaitForClientEofAsync(pipe, timeout.Token);
                     if (result == CommandResult.Accepted) logger.LogInformation("Authorized command accepted");
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
@@ -61,5 +66,10 @@ public sealed class CommandPipeWorker : BackgroundService
         finally { logger.LogInformation("Local command pipe stopped"); }
     }
     private static Task Reply(NamedPipeServerStream pipe, string id, CommandResult result, CommandFailureReason reason, CancellationToken token) => PipeMessages.WriteAsync(pipe, CommandProtocol.CreateResponse(new CommandResponse(id, result, DateTimeOffset.UtcNow, reason)), token);
+    private static async Task WaitForClientEofAsync(NamedPipeServerStream pipe, CancellationToken token)
+    {
+        var trailing = new byte[256];
+        while (await pipe.ReadAsync(trailing, token) != 0) { }
+    }
     private void LogReject(string reason) { if (rejectionLimiter.ShouldLog(reason)) logger.LogWarning("Command IPC rejected: {Reason}", reason); }
 }
