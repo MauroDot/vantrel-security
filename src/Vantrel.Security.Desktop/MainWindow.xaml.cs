@@ -43,10 +43,12 @@ public partial class MainWindow : Window
     private readonly LocalFileFingerprintComparisonInspector _fileFingerprintComparisonInspector;
     private readonly LocalFolderFingerprintInventoryInspector _folderFingerprintInventoryInspector;
     private readonly AuthenticodePublisherInspector _authenticodePublisherInspector;
+    private readonly WindowsSignatureInspector _windowsSignatureInspector;
     private CancellationTokenSource? _fileInspectionCancellation;
     private CancellationTokenSource? _fileComparisonCancellation;
     private CancellationTokenSource? _folderInventoryCancellation;
     private CancellationTokenSource? _publisherInspectionCancellation;
+    private CancellationTokenSource? _windowsSignatureInspectionCancellation;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
         IActivityClient activityClient, IScanCapabilityClient scanCapabilityClient, IComponentInspectionClient componentInspectionClient, IComponentIntegrityClient componentIntegrityClient, ITrustedManifestIntegrityClient trustedManifestIntegrityClient, IIntegrityRefreshAuditClient integrityRefreshAuditClient, ITrustedManifestIntegrityHistoryClient trustedManifestIntegrityHistoryClient, IReleaseProvenanceClient releaseProvenanceClient, ITrustedManifestRefreshCommandClient trustedManifestRefreshCommandClient,
@@ -69,11 +71,13 @@ public partial class MainWindow : Window
         _fileFingerprintComparisonInspector = new LocalFileFingerprintComparisonInspector(_fileInspectionCoordinator);
         _folderFingerprintInventoryInspector = new LocalFolderFingerprintInventoryInspector(_fileInspectionCoordinator);
         _authenticodePublisherInspector = new AuthenticodePublisherInspector(coordinator: _fileInspectionCoordinator);
+        _windowsSignatureInspector = new WindowsSignatureInspector(coordinator: _fileInspectionCoordinator);
         InitializeComponent();
         RenderFileInspection(FileFingerprintInspectionPresentation.Initial());
         RenderFileFingerprintComparison(FileFingerprintComparisonPresentation.Initial());
         RenderFolderFingerprintInventory(FolderFingerprintInventoryPresentation.Initial());
         RenderPublisherInspection(AuthenticodePublisherInspectionPresentation.Initial());
+        RenderWindowsSignatureInspection(WindowsSignatureInspectionPresentation.Initial());
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
         _refreshTimer.Tick += async (_, _) => await RefreshStatusAsync();
         Loaded += async (_, _) =>
@@ -90,6 +94,7 @@ public partial class MainWindow : Window
             _fileComparisonCancellation?.Cancel();
             _folderInventoryCancellation?.Cancel();
             _publisherInspectionCancellation?.Cancel();
+            _windowsSignatureInspectionCancellation?.Cancel();
         };
     }
 
@@ -581,6 +586,18 @@ public partial class MainWindow : Window
         PublisherInspectionSignerText.Text = presentation.DeclaredSignerSubject ?? "No declared embedded signer subject was available.";
     }
 
+    private void RenderWindowsSignatureInspection(WindowsSignatureInspectionPresentation presentation)
+    {
+        WindowsSignatureInspectionNoticeText.Text = presentation.NoticeText;
+        WindowsSignatureInspectionStateText.Text = presentation.StateText;
+        WindowsSignatureInspectionResultPanel.Visibility = presentation.HasResult ? Visibility.Visible : Visibility.Collapsed;
+        WindowsSignatureInspectionNameText.Text = presentation.FileName ?? string.Empty;
+        WindowsSignatureInspectionByteCountText.Text = presentation.ByteLength?.ToString("N0") ?? string.Empty;
+        WindowsSignatureInspectionEmbeddedText.Text = presentation.EmbeddedStateText ?? string.Empty;
+        WindowsSignatureInspectionSignerText.Text = presentation.DeclaredEmbeddedSignerSubject ?? "No declared embedded signer subject was available.";
+        WindowsSignatureInspectionCatalogText.Text = presentation.CatalogStateText ?? string.Empty;
+    }
+
     private void RenderFileFingerprintComparison(FileFingerprintComparisonPresentation presentation)
     {
         FileComparisonNoticeText.Text = presentation.NoticeText;
@@ -617,6 +634,7 @@ public partial class MainWindow : Window
         ChooseFileForComparisonButton.IsEnabled = enabled;
         ChooseFolderForInventoryButton.IsEnabled = enabled;
         ChooseFileForPublisherInspectionButton.IsEnabled = enabled;
+        ChooseFileForWindowsSignatureInspectionButton.IsEnabled = enabled;
     }
 
     private async void ChooseFileForInspectionClicked(object sender, RoutedEventArgs e)
@@ -671,6 +689,34 @@ public partial class MainWindow : Window
         finally
         {
             if (ReferenceEquals(_publisherInspectionCancellation, cancellation))
+                SetFileInspectionActionsEnabled(true);
+        }
+    }
+
+    private async void ChooseFileForWindowsSignatureInspectionClicked(object sender, RoutedEventArgs e)
+    {
+        var selectedPath = ChooseLocalFile("Choose a file for Windows signature inspection");
+        if (selectedPath is null) return;
+
+        _windowsSignatureInspectionCancellation?.Cancel();
+        _windowsSignatureInspectionCancellation?.Dispose();
+        var cancellation = new CancellationTokenSource();
+        _windowsSignatureInspectionCancellation = cancellation;
+        SetFileInspectionActionsEnabled(false);
+        RenderWindowsSignatureInspection(WindowsSignatureInspectionPresentation.InProgress());
+        try
+        {
+            var result = await _windowsSignatureInspector.InspectAsync(selectedPath, cancellation.Token);
+            if (!cancellation.IsCancellationRequested)
+                RenderWindowsSignatureInspection(WindowsSignatureInspectionPresentation.Create(result));
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            RenderWindowsSignatureInspection(WindowsSignatureInspectionPresentation.Cancelled());
+        }
+        finally
+        {
+            if (ReferenceEquals(_windowsSignatureInspectionCancellation, cancellation))
                 SetFileInspectionActionsEnabled(true);
         }
     }

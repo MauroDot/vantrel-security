@@ -85,12 +85,12 @@ internal sealed class AuthenticodePublisherInspector
             if (!file.IsUnchanged())
                 return AuthenticodePublisherInspectionResult.WithoutFile(AuthenticodePublisherInspectionOutcome.Changed);
 
-            return new AuthenticodePublisherInspectionResult(Map(native.Status), file.FileName, file.ByteLength,
+            return new AuthenticodePublisherInspectionResult(MapStatus(native.Status), file.FileName, file.ByteLength,
                 native.DeclaredSignerSubject);
         }
     }
 
-    private static AuthenticodePublisherInspectionOutcome Map(int status) => status switch
+    internal static AuthenticodePublisherInspectionOutcome MapStatus(int status) => status switch
     {
         0 => AuthenticodePublisherInspectionOutcome.Verified,
         TrustENoSignature => AuthenticodePublisherInspectionOutcome.NoUsableEmbeddedSignature,

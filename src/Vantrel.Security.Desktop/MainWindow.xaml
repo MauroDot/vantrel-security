@@ -217,6 +217,25 @@
                             <TextBlock Text="DECLARED EMBEDDED SIGNER SUBJECT" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
                             <TextBlock x:Name="PublisherInspectionSignerText" TextWrapping="Wrap" Margin="0,6,0,0"/>
                         </StackPanel>
+                        <Separator Margin="0,20,0,16"/>
+                        <TextBlock Text="WINDOWS SIGNATURE INSPECTION" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="WindowsSignatureInspectionNoticeText" TextWrapping="Wrap" Margin="0,10,0,14"/>
+                        <Button x:Name="ChooseFileForWindowsSignatureInspectionButton" Content="Choose file" Click="ChooseFileForWindowsSignatureInspectionClicked"
+                                Padding="14,7" HorizontalAlignment="Left" Margin="0,0,0,12"/>
+                        <TextBlock x:Name="WindowsSignatureInspectionStateText" TextWrapping="Wrap"
+                                   automation:AutomationProperties.LiveSetting="Polite" Margin="0,0,0,12"/>
+                        <StackPanel x:Name="WindowsSignatureInspectionResultPanel" Visibility="Collapsed">
+                            <TextBlock Text="FILE NAME" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                            <TextBlock x:Name="WindowsSignatureInspectionNameText" TextWrapping="Wrap" Margin="0,6,0,12"/>
+                            <TextBlock Text="BYTE COUNT" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                            <TextBlock x:Name="WindowsSignatureInspectionByteCountText" TextWrapping="Wrap" Margin="0,6,0,12"/>
+                            <TextBlock Text="EMBEDDED AUTHENTICODE OBSERVATION" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                            <TextBlock x:Name="WindowsSignatureInspectionEmbeddedText" TextWrapping="Wrap" Margin="0,6,0,12"/>
+                            <TextBlock Text="DECLARED EMBEDDED SIGNER SUBJECT" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                            <TextBlock x:Name="WindowsSignatureInspectionSignerText" TextWrapping="Wrap" Margin="0,6,0,12"/>
+                            <TextBlock Text="LOCAL CATALOG OBSERVATION" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                            <TextBlock x:Name="WindowsSignatureInspectionCatalogText" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                        </StackPanel>
                     </StackPanel>
                 </Border>
                 <Border x:Name="ProtectionPanel" Visibility="Collapsed" Background="#152438" CornerRadius="14"
