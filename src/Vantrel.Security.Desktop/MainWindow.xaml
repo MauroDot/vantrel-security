@@ -249,6 +249,11 @@
                         <TextBlock x:Name="ProtectionAntivirusText" TextWrapping="Wrap" Margin="0,8,0,16"/>
                         <TextBlock Text="WINDOWS-REPORTED AGGREGATE FIREWALL" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
                         <TextBlock x:Name="ProtectionFirewallText" TextWrapping="Wrap" Margin="0,8,0,16"/>
+                        <TextBlock Text="WINDOWS-REPORTED REGISTERED PROVIDERS" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="ProtectionProviderInventoryNoticeText" TextWrapping="Wrap" Margin="0,8,0,10"/>
+                        <TextBlock x:Name="ProtectionProviderInventoryStateText" TextWrapping="Wrap"
+                                   automation:AutomationProperties.LiveSetting="Polite" Margin="0,0,0,10"/>
+                        <ItemsControl x:Name="ProtectionProviderInventoryEntries" Margin="0,0,0,16"/>
                         <TextBlock Text="SIGNED INSTALLATION INTEGRITY" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
                         <TextBlock x:Name="ProtectionInstallationText" TextWrapping="Wrap" Margin="0,8,0,16"/>
                         <TextBlock Text="SIGNED RELEASE PROVENANCE AND LOCAL POLICY" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>

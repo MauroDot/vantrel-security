@@ -21,6 +21,8 @@ public partial class MainWindow : Window
     private readonly IReleaseProvenanceClient _releaseProvenanceClient;
     private readonly IUpdateTransactionClient _updateTransactionClient;
     private readonly ITrustedManifestRefreshCommandClient _trustedManifestRefreshCommandClient;
+    private readonly IWindowsSecurityProviderInventorySource _providerInventorySource = new WindowsSecurityProviderInventorySource();
+    private readonly ProtectionProviderInventorySession _providerInventorySession = new();
     private readonly ILogger<MainWindow> _logger;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private CancellationTokenSource? _refreshCancellation;
@@ -78,6 +80,7 @@ public partial class MainWindow : Window
         RenderFolderFingerprintInventory(FolderFingerprintInventoryPresentation.Initial());
         RenderPublisherInspection(AuthenticodePublisherInspectionPresentation.Initial());
         RenderWindowsSignatureInspection(WindowsSignatureInspectionPresentation.Initial());
+        RenderProtectionProviderInventory(WindowsSecurityProviderInventoryPresentation.Initial());
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
         _refreshTimer.Tick += async (_, _) => await RefreshStatusAsync();
         Loaded += async (_, _) =>
@@ -95,6 +98,7 @@ public partial class MainWindow : Window
             _folderInventoryCancellation?.Cancel();
             _publisherInspectionCancellation?.Cancel();
             _windowsSignatureInspectionCancellation?.Cancel();
+            _providerInventorySession.Clear();
         };
     }
 
@@ -296,6 +300,7 @@ public partial class MainWindow : Window
         ProtectionInstallationText.Text = presentation.InstallationText;
         ProtectionProvenanceText.Text = presentation.ProvenanceText;
         ProtectionUpdateText.Text = presentation.UpdateText;
+        RenderProtectionProviderInventory(WindowsSecurityProviderInventoryPresentation.Create(_providerInventorySession.Snapshot, DateTimeOffset.UtcNow));
         if (presentation.InstallationState == TrustedManifestIntegrityDisplayState.Disconnected)
             _trustedManifestWasDisconnected = true;
         else if (presentation.InstallationState is TrustedManifestIntegrityDisplayState.Current or TrustedManifestIntegrityDisplayState.Recovered)
@@ -308,6 +313,26 @@ public partial class MainWindow : Window
             _updateTransactionWasDisconnected = true;
         else if (presentation.UpdateState is UpdateTransactionDisplayState.Current or UpdateTransactionDisplayState.Recovered)
             _updateTransactionWasDisconnected = false;
+    }
+
+    private void RenderProtectionProviderInventory(WindowsSecurityProviderInventoryPresentation presentation)
+    {
+        ProtectionProviderInventoryNoticeText.Text = presentation.NoticeText;
+        ProtectionProviderInventoryStateText.Text = presentation.StateText;
+        ProtectionProviderInventoryEntries.ItemsSource = presentation.EntryText;
+    }
+
+    private void OpenProtectionProviderInventory()
+    {
+        RenderProtectionProviderInventory(WindowsSecurityProviderInventoryPresentation.Initial());
+        _ = CollectProtectionProviderInventoryAsync();
+    }
+
+    private async Task CollectProtectionProviderInventoryAsync()
+    {
+        var snapshot = await _providerInventorySession.OpenAsync(_providerInventorySource);
+        if (snapshot is not null && _providerInventorySession.IsCurrent(snapshot))
+            RenderProtectionProviderInventory(WindowsSecurityProviderInventoryPresentation.Create(snapshot, DateTimeOffset.UtcNow));
     }
 
     private void RenderIntegrityRefreshAudit(IntegrityRefreshAuditSnapshot? audit, bool connected)
@@ -801,6 +826,15 @@ public partial class MainWindow : Window
         }
         InstallationPanel.Visibility = section == "Installation" ? Visibility.Visible : Visibility.Collapsed;
         ProtectionPanel.Visibility = section == "Protection" ? Visibility.Visible : Visibility.Collapsed;
+        if (section == "Protection")
+        {
+            OpenProtectionProviderInventory();
+        }
+        else
+        {
+            _providerInventorySession.Clear();
+            RenderProtectionProviderInventory(WindowsSecurityProviderInventoryPresentation.Initial());
+        }
         SystemHealthPanel.Visibility = section == "System Health" ? Visibility.Visible : Visibility.Collapsed;
         ActivityPanel.Visibility = section == "Activity" ? Visibility.Visible : Visibility.Collapsed;
         PlaceholderPanel.Visibility = DesktopSectionNavigation.IsWorkspace(section) ? Visibility.Collapsed : Visibility.Visible;
