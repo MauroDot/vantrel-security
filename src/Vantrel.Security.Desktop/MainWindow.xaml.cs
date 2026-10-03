@@ -41,9 +41,11 @@ public partial class MainWindow : Window
     private readonly LocalFileInspectionCoordinator _fileInspectionCoordinator = new();
     private readonly LocalFileFingerprintInspector _fileFingerprintInspector;
     private readonly LocalFileFingerprintComparisonInspector _fileFingerprintComparisonInspector;
+    private readonly LocalFolderFingerprintInventoryInspector _folderFingerprintInventoryInspector;
     private readonly AuthenticodePublisherInspector _authenticodePublisherInspector;
     private CancellationTokenSource? _fileInspectionCancellation;
     private CancellationTokenSource? _fileComparisonCancellation;
+    private CancellationTokenSource? _folderInventoryCancellation;
     private CancellationTokenSource? _publisherInspectionCancellation;
 
     public MainWindow(ISecurityServiceStatusClient client, ISystemHealthClient healthClient,
@@ -65,10 +67,12 @@ public partial class MainWindow : Window
         _logger = logger;
         _fileFingerprintInspector = new LocalFileFingerprintInspector(coordinator: _fileInspectionCoordinator);
         _fileFingerprintComparisonInspector = new LocalFileFingerprintComparisonInspector(_fileInspectionCoordinator);
+        _folderFingerprintInventoryInspector = new LocalFolderFingerprintInventoryInspector(_fileInspectionCoordinator);
         _authenticodePublisherInspector = new AuthenticodePublisherInspector(coordinator: _fileInspectionCoordinator);
         InitializeComponent();
         RenderFileInspection(FileFingerprintInspectionPresentation.Initial());
         RenderFileFingerprintComparison(FileFingerprintComparisonPresentation.Initial());
+        RenderFolderFingerprintInventory(FolderFingerprintInventoryPresentation.Initial());
         RenderPublisherInspection(AuthenticodePublisherInspectionPresentation.Initial());
         VersionText.Text = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "Unknown";
         _refreshTimer.Tick += async (_, _) => await RefreshStatusAsync();
@@ -84,6 +88,7 @@ public partial class MainWindow : Window
             _trustedManifestRefreshCancellation?.Cancel();
             _fileInspectionCancellation?.Cancel();
             _fileComparisonCancellation?.Cancel();
+            _folderInventoryCancellation?.Cancel();
             _publisherInspectionCancellation?.Cancel();
         };
     }
@@ -582,6 +587,13 @@ public partial class MainWindow : Window
         FileComparisonStateText.Text = presentation.StateText;
     }
 
+    private void RenderFolderFingerprintInventory(FolderFingerprintInventoryPresentation presentation)
+    {
+        FolderInventoryNoticeText.Text = presentation.NoticeText;
+        FolderInventoryStateText.Text = presentation.StateText;
+        FolderInventoryEntries.ItemsSource = presentation.EntryText;
+    }
+
     private string? ChooseLocalFile(string title)
     {
         var picker = new Microsoft.Win32.OpenFileDialog
@@ -593,10 +605,17 @@ public partial class MainWindow : Window
         return picker.ShowDialog(this) == true ? picker.FileName : null;
     }
 
+    private string? ChooseLocalFolder(string title)
+    {
+        var picker = new Microsoft.Win32.OpenFolderDialog { Title = title, Multiselect = false };
+        return picker.ShowDialog(this) == true ? picker.FolderName : null;
+    }
+
     private void SetFileInspectionActionsEnabled(bool enabled)
     {
         ChooseFileForInspectionButton.IsEnabled = enabled;
         ChooseFileForComparisonButton.IsEnabled = enabled;
+        ChooseFolderForInventoryButton.IsEnabled = enabled;
         ChooseFileForPublisherInspectionButton.IsEnabled = enabled;
     }
 
@@ -693,6 +712,34 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void ChooseFolderForInventoryClicked(object sender, RoutedEventArgs e)
+    {
+        var selectedPath = ChooseLocalFolder("Choose a folder for fingerprint inventory");
+        if (selectedPath is null) return;
+
+        _folderInventoryCancellation?.Cancel();
+        _folderInventoryCancellation?.Dispose();
+        var cancellation = new CancellationTokenSource();
+        _folderInventoryCancellation = cancellation;
+        SetFileInspectionActionsEnabled(false);
+        RenderFolderFingerprintInventory(FolderFingerprintInventoryPresentation.InProgress());
+        try
+        {
+            var result = await _folderFingerprintInventoryInspector.InspectAsync(selectedPath, cancellation.Token);
+            if (!cancellation.IsCancellationRequested)
+                RenderFolderFingerprintInventory(FolderFingerprintInventoryPresentation.Create(result));
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            RenderFolderFingerprintInventory(FolderFingerprintInventoryPresentation.Cancelled());
+        }
+        finally
+        {
+            if (ReferenceEquals(_folderInventoryCancellation, cancellation))
+                SetFileInspectionActionsEnabled(true);
+        }
+    }
+
     private async void NavigationChanged(object sender, SelectionChangedEventArgs e)
     {
         if (SectionList.SelectedItem is not ListBoxItem item || SectionTitle is null) return;
@@ -701,6 +748,11 @@ public partial class MainWindow : Window
         DashboardPanel.Visibility = section == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
         ScanPanel.Visibility = section == "Scan" ? Visibility.Visible : Visibility.Collapsed;
         FileInspectionPanel.Visibility = section == "File inspection" ? Visibility.Visible : Visibility.Collapsed;
+        if (section != "File inspection")
+        {
+            _folderInventoryCancellation?.Cancel();
+            RenderFolderFingerprintInventory(FolderFingerprintInventoryPresentation.Initial());
+        }
         InstallationPanel.Visibility = section == "Installation" ? Visibility.Visible : Visibility.Collapsed;
         ProtectionPanel.Visibility = section == "Protection" ? Visibility.Visible : Visibility.Collapsed;
         SystemHealthPanel.Visibility = section == "System Health" ? Visibility.Visible : Visibility.Collapsed;

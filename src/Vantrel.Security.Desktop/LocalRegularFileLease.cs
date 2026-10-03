@@ -44,20 +44,23 @@ internal sealed class LocalRegularFileLease : IDisposable
     private readonly FileIdentity _identity;
     private bool _disposed;
 
-    private LocalRegularFileLease(SafeFileHandle handle, string normalizedPath, string finalDosPath, FileIdentity identity)
+    private LocalRegularFileLease(SafeFileHandle handle, string normalizedPath, string finalDosPath, FileIdentity identity, string fileName)
     {
-        Handle = handle; NormalizedPath = normalizedPath; FinalDosPath = finalDosPath; _identity = identity;
+        Handle = handle; NormalizedPath = normalizedPath; FinalDosPath = finalDosPath; _identity = identity; FileName = fileName;
     }
 
     internal SafeFileHandle Handle { get; }
     internal string NormalizedPath { get; }
     internal string FinalDosPath { get; }
-    internal string FileName => Path.GetFileName(NormalizedPath);
+    internal string FileName { get; }
     internal long ByteLength => _identity.ByteLength;
 
     internal static async Task<(LocalRegularFileLeaseOutcome Outcome, LocalRegularFileLease? Lease)> OpenAsync(
-        string selectedPath, CancellationToken token, Func<CancellationToken, Task>? afterPathValidationAsync = null)
+        string selectedPath, CancellationToken token, Func<CancellationToken, Task>? afterPathValidationAsync = null,
+        long maximumByteLength = MaximumByteLength)
     {
+        if (maximumByteLength < 0 || maximumByteLength > MaximumByteLength)
+            return (LocalRegularFileLeaseOutcome.Declined, null);
         if (!TryNormalizeFixedLocalPath(selectedPath, out var normalizedPath)) return (LocalRegularFileLeaseOutcome.Declined, null);
         token.ThrowIfCancellationRequested();
         if (!HasNoReparseAncestor(normalizedPath) || !IsInitiallyRegular(normalizedPath)) return (LocalRegularFileLeaseOutcome.Declined, null);
@@ -67,17 +70,62 @@ internal sealed class LocalRegularFileLease : IDisposable
             var handle = CreateFile(normalizedPath, GenericRead, (uint)(FileShare.ReadWrite | FileShare.Delete), IntPtr.Zero,
                 OpenExisting, FileFlagOverlapped | FileFlagSequentialScan | FileFlagOpenReparsePoint, IntPtr.Zero);
             if (handle.IsInvalid) { handle.Dispose(); return (LocalRegularFileLeaseOutcome.Unavailable, null); }
-            if (!TryReadRegularFileIdentity(handle, out var identity) || identity.ByteLength > MaximumByteLength ||
+            if (!TryReadRegularFileIdentity(handle, out var identity) || identity.ByteLength > maximumByteLength ||
                 !TryGetFinalNormalizedDosPath(handle, out var finalPath) ||
                 !string.Equals(finalPath, ToExtendedDosPath(normalizedPath), StringComparison.OrdinalIgnoreCase))
             {
                 handle.Dispose(); return (LocalRegularFileLeaseOutcome.Declined, null);
             }
-            return (LocalRegularFileLeaseOutcome.Opened, new LocalRegularFileLease(handle, normalizedPath, finalPath, identity));
+            return (LocalRegularFileLeaseOutcome.Opened, new LocalRegularFileLease(handle, normalizedPath, finalPath, identity,
+                Path.GetFileName(normalizedPath)));
         }
         catch (UnauthorizedAccessException) { return (LocalRegularFileLeaseOutcome.Unavailable, null); }
         catch (IOException) { return (LocalRegularFileLeaseOutcome.Unavailable, null); }
         catch (NotSupportedException) { return (LocalRegularFileLeaseOutcome.Unavailable, null); }
+    }
+
+    /// <summary>Opens an exact direct entry previously returned from the validated root directory handle.</summary>
+    internal static Task<(LocalRegularFileLeaseOutcome Outcome, LocalRegularFileLease? Lease)> OpenDirectoryEntryAsync(
+        LocalRegularDirectoryLease root,
+        HandleRelativeDirectoryEntry entry,
+        IHandleRelativeDirectoryOperations operations,
+        CancellationToken token,
+        long maximumByteLength)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentNullException.ThrowIfNull(operations);
+        if (maximumByteLength < 0 || maximumByteLength > MaximumByteLength || !IsValidDirectEntryName(entry.Name) ||
+            (entry.Attributes & (FileAttributeDirectory | FileAttributeDevice | FileAttributeReparsePoint)) != 0)
+        {
+            return Task.FromResult((LocalRegularFileLeaseOutcome.Declined, (LocalRegularFileLease?)null));
+        }
+
+        token.ThrowIfCancellationRequested();
+        try
+        {
+            var handle = operations.OpenFile(root.Handle, entry.FileId);
+            if (handle.IsInvalid)
+            {
+                handle.Dispose();
+                return Task.FromResult((LocalRegularFileLeaseOutcome.Unavailable, (LocalRegularFileLease?)null));
+            }
+
+            if (!TryReadRegularFileIdentity(handle, out var identity) || identity.VolumeSerialNumber != root.VolumeSerialNumber ||
+                identity.FileIndex != unchecked((ulong)entry.FileId) || identity.ByteLength > maximumByteLength ||
+                !TryGetFinalNormalizedDosPath(handle, out var finalPath) ||
+                !root.IsExactDirectChildFinalPath(finalPath, entry.Name))
+            {
+                handle.Dispose();
+                return Task.FromResult((LocalRegularFileLeaseOutcome.Declined, (LocalRegularFileLease?)null));
+            }
+
+            return Task.FromResult((LocalRegularFileLeaseOutcome.Opened,
+                (LocalRegularFileLease?)new LocalRegularFileLease(handle, finalPath, finalPath, identity, entry.Name)));
+        }
+        catch (UnauthorizedAccessException) { return Task.FromResult((LocalRegularFileLeaseOutcome.Unavailable, (LocalRegularFileLease?)null)); }
+        catch (IOException) { return Task.FromResult((LocalRegularFileLeaseOutcome.Unavailable, (LocalRegularFileLease?)null)); }
+        catch (NotSupportedException) { return Task.FromResult((LocalRegularFileLeaseOutcome.Unavailable, (LocalRegularFileLease?)null)); }
     }
 
     internal bool IsUnchanged() => !_disposed && TryReadRegularFileIdentity(Handle, out var identity) && identity == _identity &&
@@ -128,6 +176,10 @@ internal sealed class LocalRegularFileLease : IDisposable
         catch (UnauthorizedAccessException) { return false; }
         catch (IOException) { return false; }
     }
+
+    private static bool IsValidDirectEntryName(string name) =>
+        !string.IsNullOrEmpty(name) && name is not "." and not ".." && !name.Contains('\0') &&
+        name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 && name.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, ':']) < 0;
 
     private static bool TryReadRegularFileIdentity(SafeFileHandle handle, out FileIdentity identity)
     {

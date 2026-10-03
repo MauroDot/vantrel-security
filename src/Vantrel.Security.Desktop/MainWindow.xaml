@@ -196,6 +196,14 @@
                         <TextBlock x:Name="FileComparisonStateText" TextWrapping="Wrap"
                                    automation:AutomationProperties.LiveSetting="Polite" Margin="0,0,0,0"/>
                         <Separator Margin="0,20,0,16"/>
+                        <TextBlock Text="FOLDER FINGERPRINT INVENTORY" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
+                        <TextBlock x:Name="FolderInventoryNoticeText" TextWrapping="Wrap" Margin="0,10,0,14"/>
+                        <Button x:Name="ChooseFolderForInventoryButton" Content="Choose folder and inventory" Click="ChooseFolderForInventoryClicked"
+                                Padding="14,7" HorizontalAlignment="Left" Margin="0,0,0,12"/>
+                        <TextBlock x:Name="FolderInventoryStateText" TextWrapping="Wrap"
+                                   automation:AutomationProperties.LiveSetting="Polite" Margin="0,0,0,10"/>
+                        <ItemsControl x:Name="FolderInventoryEntries" Margin="0,0,0,0"/>
+                        <Separator Margin="0,20,0,16"/>
                         <TextBlock Text="EMBEDDED AUTHENTICODE PUBLISHER INSPECTION" Foreground="#9CB4CA" FontSize="12" FontWeight="Bold"/>
                         <TextBlock x:Name="PublisherInspectionNoticeText" TextWrapping="Wrap" Margin="0,10,0,14"/>
                         <Button x:Name="ChooseFileForPublisherInspectionButton" Content="Choose file" Click="ChooseFileForPublisherInspectionClicked"
