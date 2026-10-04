@@ -1,5 +1,16 @@
 <Project>
   <PropertyGroup>
     <Version>0.1.0</Version>
+    <Deterministic>true</Deterministic>
+    <DeterministicSourcePaths>true</DeterministicSourcePaths>
+    <PathMap Condition="'$(PathMap)' == ''">$(MSBuildThisFileDirectory)=/_/</PathMap>
+    <ContinuousIntegrationBuild Condition="'$(VantrelReleaseVersion)' != '' and '$(VantrelSourceCommit)' != ''">true</ContinuousIntegrationBuild>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(VantrelReleaseVersion)' != '' and '$(VantrelSourceCommit)' != ''">
+    <InformationalVersion>$(VantrelReleaseVersion)+$(VantrelSourceCommit)</InformationalVersion>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(VantrelReleaseVersion)' != '' and '$(VantrelSourceCommit)' != ''">
+    <AssemblyMetadata Include="VantrelReleaseVersion" Value="$(VantrelReleaseVersion)" />
+    <AssemblyMetadata Include="VantrelSourceCommit" Value="$(VantrelSourceCommit)" />
+  </ItemGroup>
 </Project>

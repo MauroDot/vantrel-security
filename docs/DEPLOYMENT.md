@@ -16,9 +16,9 @@ dotnet --list-sdks
 dotnet --list-runtimes
 ```
 
-`global.json` sets SDK baseline `10.0.400` with `rollForward` `latestPatch`. This selects the latest installed patch in the 10.0.400 feature band, currently 10.0.401, while rejecting a different feature band until deliberately reviewed. Upgrade the baseline when adopting a newer SDK feature band. The Microsoft.Extensions.Hosting, WindowsServices, and ServiceController packages use 10.0.12; the service relies on WindowsServices' Hosting dependency instead of a duplicate direct reference. The existing test packages were retained because they build and run cleanly on .NET 10.
+`global.json` requires SDK `10.0.401` with roll-forward disabled for beta release work. The beta release gate also requires a clean immutable checkout and a locked restore from the committed package lock files; normal development restore remains unlocked. See [BETA-RELEASE.md](BETA-RELEASE.md) for the build-input and post-build signing sequence. The Microsoft.Extensions.Hosting, WindowsServices, and ServiceController packages use 10.0.12; the service relies on WindowsServices' Hosting dependency instead of a duplicate direct reference. The existing test packages were retained because they build and run cleanly on .NET 10.
 
-`Directory.Build.props` supplies version `0.1.0` to all projects. Change this one property for a release. The service reports its assembly version to the status protocol; keep the desktop and service built from the same release source.
+`Directory.Build.props` supplies the runtime-compatible numeric version `0.1.0` to all projects. A beta release descriptor version and immutable source commit are bound to published informational/build metadata by the beta release gate; they do not create a runtime release channel. Keep the desktop and service built from the same release source.
 
 ## Trusted release model
 

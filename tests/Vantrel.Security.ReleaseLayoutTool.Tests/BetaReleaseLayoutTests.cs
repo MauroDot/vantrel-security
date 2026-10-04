@@ -1,10 +1,13 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text;
 using Vantrel.Security.ManifestTool;
 using Vantrel.Security.ReleaseLayoutTool;
 
 namespace Vantrel.Security.ReleaseLayoutTool.Tests;
 
 [TestClass]
+[DoNotParallelize]
 public sealed class BetaReleaseLayoutTests
 {
     private const int PrivilegeNotHeldHResult = unchecked((int)0x80070522);
@@ -167,8 +170,289 @@ public sealed class BetaReleaseLayoutTests
         scope.AssertRejected();
     }
 
+    [TestMethod]
+    public void Two_independent_clean_source_roots_publish_identical_artifacts_and_bind_descriptor_metadata()
+    {
+        using var scope = new IndependentPublishScope();
+        const string version = "0.1.0-beta.1";
+        var first = Path.Combine(scope.Root, "first-output");
+        var second = Path.Combine(scope.Root, "second-output");
+
+        Assert.AreEqual(scope.FirstSource.Commit, scope.SecondSource.Commit);
+        var firstResult = scope.FirstSource.RunPrepare(first, version);
+        var secondResult = scope.SecondSource.RunPrepare(second, version);
+
+        Assert.AreEqual(0, firstResult.ExitCode, firstResult.Output);
+        Assert.AreEqual(0, secondResult.ExitCode, secondResult.Output);
+        CollectionAssert.AreEqual(Snapshot(first), Snapshot(second));
+        foreach (var relativeAssembly in new[]
+                 {
+                     "service/Vantrel.Security.Service.dll",
+                     "desktop/Vantrel.Security.Desktop.dll",
+                     "offline-update-tool/Vantrel.Security.OfflineUpdateTool.dll"
+                 })
+        {
+            var image = Encoding.UTF8.GetString(File.ReadAllBytes(Path.Combine(first, relativeAssembly)));
+            StringAssert.Contains(image, version + "+" + scope.FirstSource.Commit);
+            StringAssert.Contains(image, "VantrelReleaseVersion");
+            StringAssert.Contains(image, "VantrelSourceCommit");
+        }
+    }
+
+    [DataTestMethod]
+    [DataRow(" M tracked-input")]
+    [DataRow("?? untracked-input")]
+    public void Release_script_rejects_dirty_or_untracked_checkout_before_publish(string status)
+    {
+        using var scope = new ScriptScope(status, failLockedRestore: false);
+
+        var result = scope.RunPrepare();
+
+        Assert.AreNotEqual(0, result.ExitCode);
+        StringAssert.Contains(result.Output, "Beta release requires a clean immutable checkout.");
+        Assert.IsFalse(result.Output.Contains("tracked-input", StringComparison.Ordinal));
+        Assert.IsFalse(Directory.Exists(scope.OutputRoot));
+    }
+
+    [TestMethod]
+    public void Release_script_rejects_ignored_residue_in_a_real_disposable_source_fixture_before_restore()
+    {
+        using var fixture = ReleaseSourceFixture.Create();
+        var residue = "ignored-release-residue.txt";
+        File.WriteAllText(Path.Combine(fixture.Root, ".git", "info", "exclude"), residue + "\n");
+        File.WriteAllText(Path.Combine(fixture.Root, residue), "ignored");
+        var output = Path.Combine(Path.GetTempPath(), "vantrel-beta-ignored-output-" + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            var result = fixture.RunPrepare(output, "0.1.0-beta.1");
+
+            Assert.AreNotEqual(0, result.ExitCode);
+            StringAssert.Contains(result.Output, "Beta release requires a clean immutable checkout.");
+            Assert.IsFalse(result.Output.Contains(residue, StringComparison.Ordinal));
+            Assert.IsFalse(Directory.Exists(output));
+        }
+        finally
+        {
+            if (Directory.Exists(output)) Directory.Delete(output, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void Locked_restore_failure_prevents_release_publish()
+    {
+        using var scope = new ScriptScope(status: null, failLockedRestore: true);
+
+        var result = scope.RunPrepare();
+
+        Assert.AreNotEqual(0, result.ExitCode);
+        StringAssert.Contains(result.Output, "dotnet command failed");
+        var invocations = File.ReadAllText(scope.DotnetLog);
+        StringAssert.Contains(invocations, "restore");
+        StringAssert.Contains(invocations, "--locked-mode");
+        Assert.IsFalse(invocations.Contains("publish", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public void Changed_real_package_graph_fails_locked_restore_before_release_artifacts_are_created()
+    {
+        using var fixture = ReleaseSourceFixture.Create();
+        var project = Path.Combine(fixture.Root, "tests", "Vantrel.Security.ReleaseLayoutTool.Tests", "Vantrel.Security.ReleaseLayoutTool.Tests.csproj");
+        File.WriteAllText(project, File.ReadAllText(project).Replace("</Project>", "  <ItemGroup>\n    <PackageReference Include=\"System.Text.Json\" Version=\"10.0.1\" />\n  </ItemGroup>\n</Project>", StringComparison.Ordinal));
+        fixture.CommitChanges("change locked package graph");
+        var output = Path.Combine(Path.GetTempPath(), "vantrel-beta-lock-output-" + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            var result = fixture.RunPrepare(output, "0.1.0-beta.1");
+
+            Assert.AreNotEqual(0, result.ExitCode);
+            StringAssert.Contains(result.Output, "dotnet command failed");
+            Assert.IsFalse(File.Exists(Path.Combine(output, BetaReleaseLayoutValidator.RecordFileName)));
+            Assert.IsFalse(Directory.Exists(Path.Combine(output, "service")));
+            Assert.IsFalse(Directory.Exists(Path.Combine(output, "desktop")));
+            Assert.IsFalse(Directory.Exists(Path.Combine(output, "offline-update-tool")));
+        }
+        finally
+        {
+            if (Directory.Exists(output)) Directory.Delete(output, recursive: true);
+        }
+    }
+
     private static bool IsPrivilegeNotHeld(Exception error) => error.HResult == PrivilegeNotHeldHResult;
 
+    private static string[] Snapshot(string root) => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+        .Select(path => Path.GetRelativePath(root, path).Replace('\\', '/') + "|" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))))
+        .OrderBy(value => value, StringComparer.Ordinal).ToArray();
+
+    private static ProcessResult Run(string fileName, IEnumerable<string> arguments, string? path = null, string? log = null, IReadOnlyDictionary<string, string>? environment = null)
+    {
+        using var process = new Process { StartInfo = new ProcessStartInfo(fileName) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true } };
+        foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
+        if (path is not null) process.StartInfo.Environment["PATH"] = path;
+        if (log is not null) process.StartInfo.Environment["VANTREL_TEST_LOG"] = log;
+        if (environment is not null)
+            foreach (var pair in environment) process.StartInfo.Environment[pair.Key] = pair.Value;
+        process.Start();
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        process.WaitForExit();
+        Task.WaitAll(standardOutput, standardError);
+        return new(process.ExitCode, standardOutput.Result + standardError.Result);
+    }
+
+    private sealed record ProcessResult(int ExitCode, string Output);
+
+    private sealed class IndependentPublishScope : IDisposable
+    {
+        internal string Root { get; } = Path.Combine(Path.GetTempPath(), "vantrel-beta-independent-publish-" + Guid.NewGuid().ToString("N"));
+        internal ReleaseSourceFixture FirstSource { get; }
+        internal ReleaseSourceFixture SecondSource { get; }
+
+        internal IndependentPublishScope()
+        {
+            Directory.CreateDirectory(Root);
+            FirstSource = ReleaseSourceFixture.Create(Path.Combine(Root, "source-one"));
+            SecondSource = ReleaseSourceFixture.Create(Path.Combine(Root, "source-two"));
+        }
+
+        public void Dispose()
+        {
+            FirstSource.Dispose();
+            SecondSource.Dispose();
+            TryDeleteDirectory(Root);
+        }
+    }
+
+    private sealed class ReleaseSourceFixture : IDisposable
+    {
+        private const string FixedGitDate = "2026-10-04T00:00:00Z";
+        private const string ExcludedFixtureScript = "task016-fixture-recovery-review.ps1";
+        private readonly string _notes;
+
+        internal string Root { get; }
+        internal string Commit { get; private set; } = string.Empty;
+
+        private ReleaseSourceFixture(string root)
+        {
+            Root = root;
+            _notes = Path.Combine(Path.GetTempPath(), "vantrel-beta-notes-" + Guid.NewGuid().ToString("N") + ".md");
+        }
+
+        internal static ReleaseSourceFixture Create(string? root = null)
+        {
+            var fixture = new ReleaseSourceFixture(root ?? Path.Combine(Path.GetTempPath(), "vantrel-beta-source-" + Guid.NewGuid().ToString("N")));
+            fixture.CloneHeadAndApplyCurrentReleaseChanges();
+            File.WriteAllText(fixture._notes, "# Beta notes\n");
+            Assert.AreEqual(0, Run("git", ["-C", fixture.Root, "config", "user.email", "release-fixture@example.invalid"]).ExitCode);
+            Assert.AreEqual(0, Run("git", ["-C", fixture.Root, "config", "user.name", "Release Fixture"]).ExitCode);
+            fixture.CommitChanges("release fixture");
+            return fixture;
+        }
+
+        internal void CommitChanges(string message)
+        {
+            Assert.AreEqual(0, Run("git", ["-C", Root, "add", "-A"]).ExitCode);
+            var dates = new Dictionary<string, string>
+            {
+                ["GIT_AUTHOR_DATE"] = FixedGitDate,
+                ["GIT_COMMITTER_DATE"] = FixedGitDate
+            };
+            var commit = Run("git", ["-C", Root, "commit", "--quiet", "-m", message], environment: dates);
+            Assert.AreEqual(0, commit.ExitCode, commit.Output);
+            var head = Run("git", ["-C", Root, "rev-parse", "HEAD"]);
+            Assert.AreEqual(0, head.ExitCode, head.Output);
+            Commit = head.Output.Trim();
+        }
+
+        internal ProcessResult RunPrepare(string output, string version) => Run("powershell.exe", [
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(Root, "scripts", "New-BetaReleaseLayout.ps1"),
+            "-Phase", "Prepare", "-OutputRoot", output, "-SourceCommit", Commit, "-ReleaseVersion", version,
+            "-ReleaseSequence", "1", "-PublishedAtUtc", "2026-10-04T00:00:00Z", "-ReleaseNotesPath", _notes
+        ]);
+
+        public void Dispose()
+        {
+            if (File.Exists(_notes)) File.Delete(_notes);
+            TryDeleteDirectory(Root);
+        }
+
+        private void CloneHeadAndApplyCurrentReleaseChanges()
+        {
+            var sourceRoot = FindRepositoryRoot();
+            var clone = Run("git", ["clone", "--quiet", "--no-local", sourceRoot, Root]);
+            Assert.AreEqual(0, clone.ExitCode, clone.Output);
+
+            var tracked = Run("git", ["-C", sourceRoot, "-c", "core.autocrlf=false", "diff", "--name-only", "HEAD"]);
+            var untracked = Run("git", ["-C", sourceRoot, "-c", "core.autocrlf=false", "ls-files", "--others", "--exclude-standard"]);
+            Assert.AreEqual(0, tracked.ExitCode, tracked.Output);
+            Assert.AreEqual(0, untracked.ExitCode, untracked.Output);
+            var files = tracked.Output.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries)
+                .Concat(untracked.Output.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries))
+                .Distinct(StringComparer.Ordinal);
+            foreach (var relative in files)
+            {
+                if (string.Equals(relative.Replace('/', '\\'), ExcludedFixtureScript, StringComparison.OrdinalIgnoreCase)) continue;
+                var source = Path.Combine(sourceRoot, relative);
+                var destination = Path.Combine(Root, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                File.Copy(source, destination, overwrite: true);
+            }
+        }
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        for (var attempt = 0; Directory.Exists(path) && attempt < 5; attempt++)
+        {
+            try
+            {
+                Directory.Delete(path, recursive: true);
+                return;
+            }
+            catch (IOException) { if (attempt < 4) Thread.Sleep(200); }
+            catch (UnauthorizedAccessException) { if (attempt < 4) Thread.Sleep(200); }
+        }
+    }
+
+    private sealed class ScriptScope : IDisposable
+    {
+        private const string Commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        private readonly string _fakeBin;
+        private readonly string _notes;
+        internal string Root { get; } = Path.Combine(Path.GetTempPath(), "vantrel-beta-script-" + Guid.NewGuid().ToString("N"));
+        internal string OutputRoot => Path.Combine(Root, "output");
+        internal string DotnetLog => Path.Combine(Root, "dotnet.log");
+
+        internal ScriptScope(string? status, bool failLockedRestore)
+        {
+            Directory.CreateDirectory(Root);
+            _fakeBin = Path.Combine(Root, "bin");
+            Directory.CreateDirectory(_fakeBin);
+            _notes = Path.Combine(Root, "notes.md");
+            File.WriteAllText(_notes, "notes");
+            File.WriteAllText(Path.Combine(_fakeBin, "git.cmd"), BuildGit(status));
+            File.WriteAllText(Path.Combine(_fakeBin, "dotnet.cmd"), BuildDotnet(failLockedRestore));
+        }
+
+        internal ProcessResult RunPrepare() => Run("powershell.exe", [
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(FindRepositoryRoot(), "scripts", "New-BetaReleaseLayout.ps1"),
+            "-Phase", "Prepare", "-OutputRoot", OutputRoot, "-SourceCommit", Commit, "-ReleaseVersion", "0.1.0-beta.1",
+            "-ReleaseSequence", "1", "-PublishedAtUtc", "2026-10-04T00:00:00Z", "-ReleaseNotesPath", _notes
+        ], _fakeBin + ";" + Environment.GetEnvironmentVariable("PATH"), DotnetLog);
+
+        public void Dispose() { if (Directory.Exists(Root)) Directory.Delete(Root, recursive: true); }
+
+        private static string BuildGit(string? status) => $"@echo off\r\nsetlocal\r\nset args=%*\r\necho %args%>> \"%VANTREL_TEST_LOG%\"\r\necho %args% | findstr /C:\"rev-parse\" >nul\r\nif not errorlevel 1 (echo {Commit} & exit /b 0)\r\necho %args% | findstr /C:\"cat-file\" >nul\r\nif not errorlevel 1 exit /b 0\r\necho %args% | findstr /C:\"status\" >nul\r\nif not errorlevel 1 (" + (status is null ? "exit /b 0" : $"echo {status} & exit /b 0") + ")\r\nexit /b 1\r\n";
+        private static string BuildDotnet(bool failLockedRestore) => $"@echo off\r\nsetlocal\r\nset args=%*\r\necho %args%>> \"%VANTREL_TEST_LOG%\"\r\necho %args% | findstr /C:\"--version\" >nul\r\nif not errorlevel 1 (echo 10.0.401 & exit /b 0)\r\necho %args% | findstr /C:\"restore\" >nul\r\nif not errorlevel 1 (" + (failLockedRestore ? "exit /b 1" : "exit /b 0") + ")\r\nexit /b 0\r\n";
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+            if (File.Exists(Path.Combine(directory.FullName, "Directory.Build.props"))) return directory.FullName;
+        throw new InvalidOperationException("Repository root is unavailable.");
+    }
     private sealed class LayoutScope : IDisposable
     {
         private const string Version = "0.1.0-beta.1";
