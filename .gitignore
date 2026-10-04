@@ -23,3 +23,7 @@ appsettings.*.local.json
 *.pfx
 *.p12
 *.snk
+
+*.pk8
+*.pem
+*.key

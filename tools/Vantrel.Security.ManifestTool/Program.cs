@@ -2,6 +2,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Vantrel.Security.Core;
+using Vantrel.Security.ManifestTool;
 
 try
 {
@@ -19,23 +20,22 @@ try
         return arguments[index + 1];
     }
 
+    string Optional(string name, string fallback)
+    {
+        var index = arguments.IndexOf(name);
+        if (index < 0) return fallback;
+        if (index + 1 >= arguments.Count) throw new ArgumentException($"Missing {name}.");
+        return arguments[index + 1];
+    }
+
     var payload = Path.GetFullPath(Required("--payload"));
     if (!Directory.Exists(payload)) throw new DirectoryNotFoundException(payload);
     var manifestPath = Path.Combine(payload, "Vantrel.Security.TrustedManifest");
     var metadataPath = Path.Combine(payload, "Vantrel.Security.ReleaseMetadata");
-    var files = new (TrustedManifestComponent Component, string FileName)[]
-    {
-        (TrustedManifestComponent.ServiceExe, "Vantrel.Security.Service.exe"),
-        (TrustedManifestComponent.ServiceAssembly, "Vantrel.Security.Service.dll"),
-        (TrustedManifestComponent.InfrastructureAssembly, "Vantrel.Security.Infrastructure.dll"),
-        (TrustedManifestComponent.CoreAssembly, "Vantrel.Security.Core.dll"),
-        (TrustedManifestComponent.Deps, "Vantrel.Security.Service.deps.json"),
-        (TrustedManifestComponent.RuntimeConfig, "Vantrel.Security.Service.runtimeconfig.json"),
-        (TrustedManifestComponent.EventLogResource, "System.Diagnostics.EventLog.Messages.dll")
-    };
+    var files = ReleasePayloadVerifier.ServiceComponents;
 
-    foreach (var (_, name) in files)
-        if (!File.Exists(Path.Combine(payload, name))) throw new FileNotFoundException("Missing payload component.", name);
+    foreach (var file in files)
+        if (!File.Exists(Path.Combine(payload, file.FileName))) throw new FileNotFoundException("Missing payload component.", file.FileName);
     RejectPrivateKeyMaterial(payload);
 
     byte[] VerifyManifestAndComponents()
@@ -44,10 +44,10 @@ try
         var trustedKey = Convert.FromBase64String(TrustedManifestPublicKeyBase64);
         if (!TrustedManifestCodec.TryParse(manifestBytes, out var manifest, out _)) throw new InvalidDataException("Manifest parse failed.");
         if (!TrustedManifestCodec.Verify(manifest!, trustedKey)) throw new CryptographicException("Manifest signature is invalid.");
-        foreach (var (component, name) in files)
+        foreach (var file in files)
         {
-            var observed = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(payload, name))));
-            if (!CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(observed), Encoding.ASCII.GetBytes(manifest!.Hashes[component])))
+            var observed = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(payload, file.FileName))));
+            if (!CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(observed), Encoding.ASCII.GetBytes(manifest!.Hashes[file.Component])))
                 throw new InvalidDataException("Payload hash mismatch.");
         }
         return manifestBytes;
@@ -56,9 +56,10 @@ try
     void SignTrustedManifest()
     {
         if (File.Exists(manifestPath)) throw new InvalidOperationException("Refusing to overwrite an existing signed manifest.");
+        var releaseVersion = CanonicalReleaseVersion.Resolve(Optional("--release-version", CanonicalReleaseVersion.Default));
         var privateKeyPath = Path.GetFullPath(Required("--private-key"));
         var hashes = files.ToDictionary(item => item.Component, item => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(payload, item.FileName)))));
-        var canonical = TrustedManifestCodec.CreateCanonicalPayload("0.1.0", hashes);
+        var canonical = TrustedManifestCodec.CreateCanonicalPayload(releaseVersion, hashes);
         using var signingKey = ImportFixedKey(privateKeyPath, Convert.FromBase64String(TrustedManifestPublicKeyBase64));
         var signature = signingKey.SignData(canonical, HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
         File.WriteAllBytes(manifestPath, Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(canonical) + "signature=" + Convert.ToBase64String(signature) + "\n"));
@@ -87,32 +88,10 @@ try
 
     void VerifyReleaseMetadata()
     {
-        VerifyExactReleaseSet();
-        var manifestBytes = VerifyManifestAndComponents();
-        var metadataBytes = File.ReadAllBytes(metadataPath);
-        if (!ReleaseMetadataCodec.TryParse(metadataBytes, out var metadata, out _)) throw new InvalidDataException("Release metadata parse failed.");
-        if (!ReleaseMetadataCodec.Verify(metadata!, Convert.FromBase64String(ReleaseMetadataPublicKeyBase64)))
-            throw new CryptographicException("Release metadata signature is invalid.");
-        var manifestHash = Convert.ToHexString(SHA256.HashData(manifestBytes));
-        if (!CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(manifestHash), Encoding.ASCII.GetBytes(metadata!.ManifestSha256)))
-            throw new InvalidDataException("Release metadata manifest binding is invalid.");
+        Vantrel.Security.ManifestTool.ReleasePayloadVerifier.Verify(payload);
         Console.WriteLine("Release metadata signature, manifest binding, and all seven payload hashes verified.");
     }
 
-    void VerifyExactReleaseSet()
-    {
-        var required = files.Select(item => item.FileName)
-            .Append("Vantrel.Security.TrustedManifest")
-            .Append("Vantrel.Security.ReleaseMetadata")
-            .ToHashSet(StringComparer.Ordinal);
-        if ((File.GetAttributes(payload) & FileAttributes.ReparsePoint) != 0)
-            throw new InvalidDataException("Release payload root must not be a reparse point.");
-        var entries = Directory.EnumerateFileSystemEntries(payload).ToArray();
-        if (entries.Length != required.Count || entries.Any(path =>
-            (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0 ||
-            !File.Exists(path) || !required.Remove(Path.GetFileName(path))))
-            throw new InvalidDataException("Release payload must contain exactly the fixed signed service release files.");
-    }
 
     switch (command)
     {

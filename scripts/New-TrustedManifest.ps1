@@ -1,12 +1,13 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$PayloadDirectory,
-    [Parameter(Mandatory)][string]$PrivateKeyPk8Path
+    [Parameter(Mandatory)][string]$PrivateKeyPk8Path,
+    [string]$ReleaseVersion = '0.1.0'
 )
 
 $ErrorActionPreference = 'Stop'
 $target = (Resolve-Path -LiteralPath $PayloadDirectory).Path
 $private = (Resolve-Path -LiteralPath $PrivateKeyPk8Path).Path
 $tool = Join-Path $PSScriptRoot '..\tools\Vantrel.Security.ManifestTool\Vantrel.Security.ManifestTool.csproj'
-dotnet run --project $tool --configuration Release -- sign --payload $target --private-key $private
+dotnet run --project $tool --configuration Release -- sign --payload $target --private-key $private --release-version $ReleaseVersion
 if ($LASTEXITCODE) { throw 'Trusted manifest signing utility failed.' }
