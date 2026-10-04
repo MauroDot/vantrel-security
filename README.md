@@ -1,21 +1,113 @@
 # Kestermere Security
 
-Vantrel Security is a planned Windows security and system health application. The prototype has a manageable Windows Service, local status communication, and read-only System Health, Activity, Scan Capability, and fixed component-inspection views in a non-elevated WPF desktop. It does **not** scan, monitor threats, block, or remove threats.
+**Security & System Integrity for Windows**  
+**By Mauro Interactive**
 
-**Kestermere Security is pre-release development software and must not be relied upon as the sole antivirus or endpoint protection solution.** Keep Defender and Windows Firewall enabled.
+Kestermere Security is a pre-release Windows security and system-integrity application built around a non-elevated WPF desktop, a least-privilege Windows Service, hardened local IPC, Windows security posture observation, cryptographically authenticated installation integrity, and guarded offline release/update recovery.
 
-## Projects and requirements
+> **Important:** Kestermere Security is development software. It is **not** currently a replacement for Microsoft Defender, Windows Firewall, or another supported endpoint-protection product. Keep your existing Windows security protections enabled.
+
+## Current beta capabilities
+
+The current committed beta can:
+
+- Display service connectivity, version, heartbeat, uptime, Windows version/build, system uptime, and system-volume capacity.
+- Observe Windows-reported antivirus and firewall health and retain a bounded in-memory activity history.
+- Inventory Windows Security providers and observe Windows Firewall profile state.
+- Hand users off to Windows Security without impersonating, controlling, or misrepresenting Windows Security scanning.
+- Inspect bounded local files and folders using SHA-256 fingerprinting.
+- Inspect embedded Authenticode publisher information and Windows catalog-signature information.
+- Compare freshly observed SHA-256 values where the capability defines a trusted reference.
+- Observe selected installed Kestermere/Vantrel components through fixed, bounded collectors rather than arbitrary filesystem authority.
+- Authenticate a signed installation manifest and compare a closed set of installed service components against it.
+- Authenticate signed release metadata, bind it to the signed manifest, and enforce a durable anti-rollback release policy.
+- Record bounded integrity-refresh audit/history information.
+- Perform an Administrator-operated, guarded offline service-release transaction with durable recovery state, independently verified predecessor backup, post-replacement health verification, and rollback protections.
+
+The beta does **not** currently provide a Kestermere malware-detection engine, real-time threat blocking, quarantine, malware removal, arbitrary file scanning, behavioral detection, or a replacement firewall.
+
+## Architecture
+
+```text
+┌──────────────────────────────────────────┐
+│     Kestermere Security Desktop          │
+│        WPF / normal user token           │
+└───────────────────┬──────────────────────┘
+                    │
+          versioned local named pipes
+          explicit ACLs + bounded framing
+                    │
+┌───────────────────▼──────────────────────┐
+│       Windows Service / LocalService     │
+│                                          │
+│  • health and security observations      │
+│  • integrity and provenance state        │
+│  • bounded inspection capabilities       │
+│  • guarded command authorization         │
+│  • update/recovery coordination          │
+└──────────┬───────────────────┬───────────┘
+           │                   │
+           ▼                   ▼
+   Windows APIs / WSC    Fixed local trust data
+                         manifests / release policy
+```
+
+The desktop and worker are separate processes. Closing the desktop does not stop the service. The installed worker runs as `NT AUTHORITY\LocalService`, while the desktop remains non-elevated.
+
+Kestermere deliberately separates Windows-reported security posture, Kestermere observations, cryptographic integrity/provenance, and future detection/remediation capabilities. An observation or successful signature check is not presented as a malware verdict.
+
+For the detailed design, see:
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Security design](docs/SECURITY.md)
+- [Deployment](docs/DEPLOYMENT.md)
+- [Service manual](docs/SERVICE-MANUAL.md)
+
+## Security model
+
+Kestermere is being built with narrow authority and fail-closed behavior as core design constraints.
+
+The local status boundary uses versioned named-pipe protocols with explicit Windows ACLs, bounded messages, deadlines, typed requests and responses, and no arbitrary CLR deserialization. Network and anonymous logons are not granted access to the service's local IPC boundary.
+
+Privileged operations are kept separate from ordinary read-only status requests. Release and installation integrity use externally signed metadata and manifests. The service does not contain release-signing private keys.
+
+The offline update design verifies the installed predecessor and staged candidate before service replacement, maintains durable transaction state, independently verifies the predecessor backup, verifies the resulting installation after replacement, and constrains rollback according to authenticated release policy.
+
+These mechanisms reduce attack surface and protect the application's own update/integrity workflow. They do not make Kestermere an independent root of trust against an attacker who already controls Administrator or SYSTEM.
+
+## Technology
+
+| Area | Current implementation |
+| --- | --- |
+| Desktop | WPF / .NET 10 |
+| Service | .NET Worker hosted as a Windows Service |
+| Service identity | `NT AUTHORITY\LocalService` |
+| IPC | Local Windows named pipes |
+| Integrity hashing | SHA-256 |
+| Release authentication | ECDSA P-256 signed metadata/manifests |
+| Platform | Windows 11 x64 |
+| Current product version | 0.1.0 |
+| Publisher | Mauro Interactive |
+
+The current development baseline uses .NET 10 LTS. `Core` remains platform-neutral where possible; Windows-specific service, desktop, infrastructure, and IPC projects target Windows.
+
+## Repository layout
 
 | Project | Responsibility |
 | --- | --- |
-| `src/Vantrel.Security.Desktop` | Non-elevated WPF shell, status, System Health, Activity, Scan Capability, and component-observation display |
-| `src/Vantrel.Security.Service` | Independent worker, heartbeat, cached health, Activity, Scan Capability, and component-observation snapshots, Windows Service lifetime, status pipe |
-| `src/Vantrel.Security.Core` | Typed status, health, capability, and observation models with versioned protocol validation |
-| `src/Vantrel.Security.Infrastructure` | Windows pipe ACL, framing, and status client |
-| `tests/Vantrel.Security.Core.Tests` | Core protocol tests |
-| `tests/Vantrel.Security.Ipc.Tests` | Windows pipe and worker integration tests |
+| `src/Vantrel.Security.Desktop` | Kestermere WPF desktop |
+| `src/Vantrel.Security.Service` | LocalService worker and service-owned collectors |
+| `src/Vantrel.Security.Core` | Typed models, protocols, validation, and security-domain logic |
+| `src/Vantrel.Security.Infrastructure` | Windows IPC and infrastructure implementation |
+| `src/Vantrel.Security.ManifestTool` | Trusted-manifest tooling |
+| `src/Vantrel.Security.OfflineUpdateTool` | Administrator-operated guarded offline update entry point |
+| `tests/` | Unit, integration, security-boundary, update/recovery, and Windows-specific tests |
+| `scripts/` | Publishing, service management, signing/verification, and release-support scripts |
+| `docs/` | Architecture, security, deployment, and operational documentation |
 
-Windows 11 x64, .NET 10 LTS SDK 10.0.401, .NET and Windows Desktop runtimes 10.0.12, and Windows PowerShell 5.1 are the current development baseline. Core and its tests target `net10.0`; the WPF desktop, service, infrastructure, and IPC tests target `net10.0-windows`. The framework-dependent deployment needs current, supported .NET 10 runtime components on the target machine. Check [Microsoft's support policy](https://dotnet.microsoft.com/en-us/platform/support/policy) and [DEPLOYMENT.md](docs/DEPLOYMENT.md). `Directory.Build.props` sets version 0.1.0 for the solution, and `global.json` selects the .NET 10.0.400 SDK feature band with `latestPatch` roll-forward.
+## Build and test
+
+From a Windows development environment with the repository's required .NET 10 SDK:
 
 ```powershell
 dotnet restore Vantrel.Security.sln
@@ -23,34 +115,34 @@ dotnet build Vantrel.Security.sln --no-restore
 dotnet test Vantrel.Security.sln --no-build
 ```
 
-The IPC tests exercise Windows ACLs. Run them in a normal Windows session. A restricted sandbox token can receive access denied even when the same tests pass in a normal session.
+Some integration tests exercise real Windows ACL, named-pipe, Service Control Manager, or LocalService behavior and therefore require an appropriate Windows environment. A restricted sandbox token can fail tests that pass under the intended Windows security context.
 
-## Run interactively during development
+## Interactive development
 
-The service can run without installation. In a PowerShell terminal:
+The service can run as a console-hosted development worker:
 
 ```powershell
 dotnet run --project src/Vantrel.Security.Service
 ```
 
-In another terminal under the same Windows account, opt in to the **Debug-only** development pipe and run the desktop:
+In another terminal under the same Windows account:
 
 ```powershell
 $env:DOTNET_ENVIRONMENT = 'Development'
 dotnet run --project src/Vantrel.Security.Desktop
 ```
 
-The dashboard refreshes every ten seconds. It displays Connected or Disconnected, the service version, and its heartbeat and service uptime. The System Health page displays a cached service sample of Windows version/build, elapsed time since system start, total/free space on the Windows system volume, and Windows Security Center's aggregate antivirus and firewall category health. Each missing value is Unavailable; the page distinguishes disconnected, partial, and stale samples. The service samples approximately once per minute, and the desktop checks while the page is open. Activity shows only initial observations and subsequent observed changes in those two Windows-reported categories. It retains at most 12 entries in memory since service start; observed-at is a sample time, not the time Windows changed state. Installation displays signed installation-integrity state, release provenance and local policy, offline-update transaction and recovery state, Refresh integrity activity, and signed installation-integrity history. Refresh integrity is available only in Installation. Scan displays the fixed service-owned scan capability: Vantrel scanning is not enabled, no file scan is running, no client target is accepted, no scheduled targets exist, and no detection or remediation capability is available. It has no Start Scan control. Scan also offers Open Windows Security, an external Windows handoff; Vantrel does not request, monitor, interpret, or report Windows Security scans. These Windows-reported values do not assess individual firewall profiles or rules or describe Vantrel's protection. Vantrel active protection is unavailable in this build. Stop the interactive worker with Ctrl+C; the desktop should show Disconnected on its next refresh. The release desktop requires the installed service to be running and does not use the development bypass.
+The development environment enables the explicitly designed development IPC path. Release behavior expects the installed Windows Service.
 
-## Publish and manage the Windows Service
+## Publishing and service management
 
-`scripts/Publish-Service.ps1` publishes a framework-dependent `win-x64` executable into a unique ignored folder under `artifacts/service/win-x64` and writes its location to `latest-path.txt`. Publishing does **not** require Administrator privileges.
+Publish the service:
 
 ```powershell
 .\scripts\Publish-Service.ps1
 ```
 
-Review the published executable and its displayed SHA-256 hash before installation. Open a **separate Windows PowerShell window as Administrator** for install, start, stop, restart, and uninstall. The scripts do not elevate themselves. Status can be queried from a normal window.
+Service-management operations are performed from a separate elevated Windows PowerShell session:
 
 ```powershell
 .\scripts\Manage-Service.ps1 -Action Install
@@ -61,80 +153,41 @@ Review the published executable and its displayed SHA-256 hash before installati
 .\scripts\Manage-Service.ps1 -Action Uninstall
 ```
 
-Use `-WhatIf` to inspect a management action without changing the machine. Installation refuses an existing service or installation directory, checks for the runtime required by the published service, and verifies the copied executable hash. It copies the published files into `Program Files\Vantrel Security\Service`, grants only SYSTEM and Administrators full control and LocalService read/execute, registers an Application Event Log source, and creates `VantrelSecurityService` with display name **Vantrel Security Service** under `NT AUTHORITY\LocalService`. Startup is manual so installation alone does not start a background process. Uninstall stops and removes that service, its dedicated installation directory, and its Event Log source. Historical Application log entries remain under Windows retention policy.
+Use `-WhatIf` where supported to inspect an operation before changing the machine. Review [DEPLOYMENT.md](docs/DEPLOYMENT.md) and [SERVICE-MANUAL.md](docs/SERVICE-MANUAL.md) before performing installed-service or signed-release work.
 
-These scripts are unsigned. If your PowerShell execution policy requires signed scripts, sign and review them under your organization's policy before running them. Do not weaken PowerShell policy just to run this development build. This machine's policy blocked direct script execution, so service installation was not automated here. The script's runtime check confirms only the major/minor runtime required by the published service; check the patch level yourself before installation.
+Do not weaken PowerShell execution policy merely to run development scripts. The service-management and release procedures intentionally require explicit operator/admin boundaries.
 
-For an `AllSigned` machine, [docs/SERVICE-MANUAL.md](docs/SERVICE-MANUAL.md) gives equivalent commands to type into a PowerShell session without changing execution policy.
+## Windows Security integration
 
-To inspect service logs after installation:
+Kestermere observes selected Windows-reported security state and provides an external handoff to Windows Security. It does not claim ownership of Microsoft Defender or Windows Firewall results.
 
-```powershell
-Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'VantrelSecurityService' } -MaxEvents 20
-```
+A Windows Security Center status such as `Good` describes Windows' reported category state. It is not a Kestermere malware verdict, and Kestermere's own active-protection status remains unavailable until an actual protection engine exists.
 
-The service writes lifecycle and error events to the bounded Windows Application Event Log. Interactive development uses console logging. IPC warnings include a safe lifecycle stage, exception type, and HRESULT and are rate-limited by matching failure; request bodies are not logged. The Release WPF desktop shows a sanitized connection detail on its service-status card because a Windows GUI process has no reliable visible console output.
+## Project status
 
-## Current security boundary and limits
+Kestermere is under active development. The current repository represents a security-focused beta foundation rather than a finished consumer antivirus product.
 
-The status pipe has an explicit non-inherited ACL: the service identity owns it; locally logged-on interactive users receive only data read/write, attribute read, permission read, and synchronization rights. They cannot create another pipe instance. Network and anonymous logons have no access rule. The service creates the first and only pipe instance and retains it until shutdown. The desktop connects to `.` with anonymous impersonation level, validates the typed versioned response, and in installed mode requires the Windows service to report Running. No HTTP listener or network port is opened. Messages are capped at 4 KiB and each connection has a three-second deadline.
+The architecture has progressed beyond the original service-health prototype into bounded local inspection, Windows security posture visibility, signed installation integrity, signed release provenance, anti-rollback policy, and guarded offline update/recovery infrastructure.
 
-The ACL permits any locally interactive user to request the same non-sensitive status, coarse health data, bounded Activity observations, and fixed Scan Capability snapshot. Local users can still delay the single pipe instance for up to three seconds per connection, so this is not a general privileged-command channel. **Tasks 003–008 passed installed-service validation.** Task 008 does not add a scanner or a command surface. Its non-elevated desktop showed the fixed capability snapshot, disconnected on service stop, and recovered in the same process with a newer sample after restart. Kestermere Protection Status remains Unavailable. There is no installer, code signing, or protection engine. See [docs/SECURITY.md](docs/SECURITY.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), and [docs/SERVICE-MANUAL.md](docs/SERVICE-MANUAL.md).
-
-Task 009 installed LocalService validation passed on 2026-09-18 after a corrected dependency-injection activation path. It observes only the installed service DLL and remains an observation, not a detection or trust verdict.
-
-Task 010 adds one build-pinned comparison for only Vantrel.Security.Core.dll. A Match means the observed fixed Core DLL matches the reference compiled into this Service build; a Mismatch means it differs. This is not malware detection, a safety verdict, an independent cryptographic root of trust, or installation-wide or machine-wide integrity. It accepts no target or reference input and does no general scanning, quarantine, or remediation.
-
-Task 010 installed LocalService validation passed: the non-elevated desktop stayed Connected with Component Integrity Match, changed to Disconnected when the service stopped, and recovered to a fresh Match sample after restart. Scan recovery labels are intentionally transient: each Scan subview renders Recovered on its first successful refresh after disconnect and Current on the following refresh. Activity uses separate session-aware recovery semantics.
-
-Task 011 adds a separate, read-only signed-installation comparison. It authenticates a fixed `Vantrel.Security.TrustedManifest` with one embedded ECDSA P-256 public key, then compares exactly seven fixed Program Files service components. It does not scan directories, accept a target, upload telemetry, repair files, or make a malware, clean, safe, trusted, or system-wide conclusion. A valid signature means only that the manifest was signed by the corresponding external private key; `AllMatch` means those seven observed hashes match that authenticated manifest. The private key is never included in Vantrel source, runtime configuration, Program Files, IPC, or release payload.
-
-Task 011 installed LocalService validation passed on 2026-09-19. The signed source manifest and the installed Program Files payload both verified before startup. The non-elevated desktop showed valid manifest authentication and all seven fixed components matching; it became disconnected when the service stopped and recovered in the same process after restart with a fresh current sample. These results remain a bounded signed-manifest comparison, not a malware, safety, or system-wide trust verdict.
-## Task 012 bounded integrity refresh
-
-Task 012 adds a separate local `Vantrel.Security.Command.v1` pipe for exactly one fixed interactive-user command: `refresh_trusted_manifest_integrity`. It accepts no path, target, option, hash, or manifest input. The command pipe rejects remote clients in the kernel, grants only the Interactive SID's required duplex rights, and authorizes a caller only while briefly impersonating to inspect its token; collection runs later as LocalService. The non-elevated desktop's **Refresh integrity** button sends one fresh bounded request and shows completion only after a newer signed-manifest snapshot arrives through the unchanged read-only status pipe. Command responses never contain integrity truth.
-
-## Task 013 read-only integrity refresh activity
-
-Task 013 adds the eighth fixed, parameter-free Status.v1 query, `get_integrity_refresh_audit`. It exposes at most the newest 16 authorized integrity-refresh lifecycle outcomes from the current memory-only service session; the internal command audit remains bounded at 32 entries. It contains no request IDs, identities, SIDs, tokens, paths, payloads, hashes, exception text, or integrity verdicts. Malformed and unauthorized attempts remain outside this public history. The Installation view is read-only: audit outcomes do not establish signed-manifest authentication or component-match truth, which remains available only through `get_trusted_manifest_integrity`.
-
-## Task 015 signed release metadata and anti-rollback policy
-
-Task 015 adds the tenth fixed, parameter-free Status.v1 request, `get_release_metadata`. It reports a bounded snapshot after the service verifies strict canonical `Vantrel.Security.ReleaseMetadata` with a separate embedded ECDSA P-256 public key, binds its manifest SHA-256 to the existing signed seven-component manifest, then verifies that manifest and its fixed components. The sidecar records only the fixed product, architecture, stable channel, release sequence, display version, publication time, and key ID. A LocalService-owned policy file at `C:\\ProgramData\\Vantrel Security\\ReleasePolicy\\accepted-release-v1.json` records the accepted release high-water mark. Only a fully verified sequence 1 release may perform the controlled initial bootstrap; missing or corrupt state after bootstrap fails closed. The release sequence is machine ordering, not an update action. The desktop view is read-only and Status.v1-only; Task 015 implements no update, install, rollback, policy reset, or key management. The metadata signer is separate from the trusted-manifest signer, remains external, and metadata does not cryptographically cover the desktop.
-
-## Task 014 read-only signed installation integrity history
-
-Task 014 adds the ninth fixed, parameter-free Status.v1 query, `get_trusted_manifest_integrity_history`. It exposes at most 12 newest-first completed published signed-installation evaluations for the current memory-only service session. Each record contains only its UTC sample time, bounded signature state, and bounded evaluation. The history has no component name, reason, path, hash, request ID, caller, audit, error, or correlation data. Scheduled and authorized refresh evaluations use the same publication path: the service publishes the current immutable integrity snapshot first and then appends its minimal history record. History is supplementary; only `get_trusted_manifest_integrity` establishes current integrity truth. Command.v1 remains unchanged and exposes no history command.
-
-### Task 016 — guarded offline release transaction
-
-Task 016 adds an Administrator-operated, offline update transaction. It has no network discovery, desktop update authority, Command.v1 update command, or arbitrary path input. The fixed candidate and backup release contain exactly the seven trusted service components plus `Vantrel.Security.TrustedManifest` and `Vantrel.Security.ReleaseMetadata`. Before service stop, the installed predecessor, staged candidate, and copied predecessor backup are independently verified against the release policy and both signed chains. Replacement and restoration address only the fixed Program Files service root and the exact nine-file set.
-
-The transaction journal is fixed under ProgramData and Status.v1 exposes only a bounded, path-free, read-only `get_update_status` snapshot. LocalService may commit the already post-verified target policy from the fixed journal, but never writes Program Files. Rollback is allowed only while durable policy remains the verified predecessor; target commitment, unreadable policy, or journal/policy disagreement fails closed and forbids automatic downgrade. Crash recovery treats `ServiceStopped` as an untrusted installed state and restores only the independently verified immediate predecessor backup.
-
-## Offline update security model
-
-Offline releases are accepted only after signed release metadata and the signed fixed-file manifest authenticate the exact nine-file release. The staged candidate is reverified, copied into private transaction storage, and independently reverified before replacement. The immediate predecessor backup is also cryptographically reauthenticated and bound to the durable journal and predecessor policy before rollback can restore it.
-
-The fixed, durable journal records preparation, verification, service stop, replacement, restart, post-verification, policy commitment, completion, rollback, and failed-terminal states. Recovery revalidates the current journal identity and follows the phase-specific path; a stranded pre-replacement `Prepared` or `Verified` transaction is terminalized or moved to safe rollback repair, never resumed into target replacement. Terminal `Completed`, `RolledBack`, and `Failed` transactions can be retired by the elevated administrator: only journal-bound private candidate and predecessor-backup artifacts are removed, and the journal is removed last.
-
-Rollback restart uses a cryptographically random, fixed-length, one-time nonce in the journal. After an authenticated restore, the elevated updater issues the authorization and starts the service with the nonce. The Windows service consumes that exact authorization atomically before workers, IPC, health, provenance, heartbeat, or policy work can start. Normal service starts are denied while rollback is unresolved, including stopped, required, authorized-without-the-nonce, and consumed states.
-
-An elevated transaction-wide owner lock prevents concurrent elevated update or recovery operations. A separate short-lived journal lock serializes durable journal reads and mutations, including the service's one-time nonce consumption. LocalService deliberately does not acquire the elevated owner lock, so it can complete the authorized recovery-start handoff without deadlock. Its policy worker instead uses an atomic `PostVerified` handoff under the journal lock: it rechecks the exact transaction identity, verifies the installed target, advances the monotonic target policy high-water mark, and persists `PolicyCommitted`. A retry recognizes an already exact target policy and completes forward; it never lowers policy or restores the predecessor after target policy commitment.
-
-### Operational limits
-
-The stopped-service check immediately before restore is point-in-time. It is not continuous exclusion against an independently authorized SCM start during the nine-file replacement sequence. The nine-file replacement is not release-wide atomic; recovery and cryptographic verification prevent accepting a mixed release. Normal service startup is intentionally denied in unresolved rollback states except for the one-time authorized recovery handoff.
-
-### Developer verification
-
-Use the repository's documented verification commands after restoring dependencies:
-
-```powershell
-dotnet build Vantrel.Security.sln --no-restore
-dotnet test Vantrel.Security.sln --no-build
-```
+The next stages continue toward a broader endpoint-security product while preserving the project's narrow-authority, explicit-trust, and fail-closed design.
 
 ## Public brand and compatibility identities
 
-**Kestermere Security** — *Security & System Integrity* — is the public product name and **Mauro Interactive** is the publisher. This branding does not rename the installed compatibility architecture. `VantrelSecurityService`, `Vantrel.Security.*` assemblies and namespaces, `Vantrel.Security.Status.v1` and `Vantrel.Security.Command.v1`, signed sidecars, fixed installation and ProgramData paths, schemas, signing key IDs, and the release-metadata product identifier `vantrel-security` remain intentionally unchanged. They continue to identify already installed and signed releases.
+**Kestermere Security — Security & System Integrity** is the public product name. **Mauro Interactive** is the publisher.
+
+The repository intentionally retains `Vantrel` in several internal and installed identities. These are compatibility identities, not stale public branding. Existing signed releases and trust relationships depend on names such as:
+
+- `VantrelSecurityService`
+- `Vantrel.Security.*` assemblies and namespaces
+- `Vantrel.Security.Status.v1`
+- `Vantrel.Security.Command.v1`
+- existing signed sidecars and schemas
+- fixed Program Files and ProgramData locations
+- signing key identifiers
+- the release metadata product identifier `vantrel-security`
+
+Those identities should not be casually renamed because doing so would cross installation, protocol, cryptographic, update, and backward-compatibility boundaries.
+
+## License and distribution
+
+This repository currently represents pre-release development work. Do not interpret repository availability as a claim that Kestermere is production-ready, certified antivirus software, or suitable as the sole security control for a Windows system.
