@@ -14,4 +14,6 @@ After `Prepare`, an external signing system signs only the documented Vantrel-ow
 
 Reproducible build inputs establish what was built; later external Authenticode signing and existing manifest/metadata signing establish separate signature evidence. This tool verifies but does not create Authenticode signatures.
 
+A completed release layout can be passed to the build-only InstallerPreflight tool with an explicit Windows Installer numeric product version. It verifies the canonical release record, final layout hashes, exact nine-file Service payload, and eligible Desktop and OfflineUpdateTool artifacts, then emits an installer-input plan. The plan is not an MSI and cannot install, repair, upgrade, downgrade, uninstall, start a service, create ProgramData, or coordinate an offline update transaction.
+
 No installer is produced yet. Existing development management scripts remain separate and are not beta installer tooling.

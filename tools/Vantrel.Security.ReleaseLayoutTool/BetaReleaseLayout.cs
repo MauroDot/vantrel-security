@@ -79,6 +79,115 @@ public sealed record BetaReleaseRecord(BetaReleaseDescriptor Descriptor, Verifie
     IReadOnlyList<ReleaseArtifact> Artifacts, IReadOnlyList<AuthenticodeReleaseEvidence> AuthenticodeEvidence);
 internal sealed record VerifiedAuthenticodeArtifact(AuthenticodeReleaseEvidence Evidence, string VerifiedSha256);
 
+/// <summary>Canonical, public-only release record serialization shared by post-build consumers.</summary>
+public static class BetaReleaseRecordCodec
+{
+    public const string Schema = "vantrel-beta-release-record-v1";
+    private static readonly UTF8Encoding Utf8 = new(false, true);
+
+    public static byte[] CreateCanonical(BetaReleaseRecord record)
+    {
+        Validate(record);
+        var descriptor = record.Descriptor;
+        var service = record.ServicePayload;
+        var text = new StringBuilder()
+            .Append("schema=").Append(Schema).Append('\n')
+            .Append("source-commit=").Append(descriptor.SourceCommit).Append('\n')
+            .Append("release-version=").Append(descriptor.ReleaseVersion).Append('\n')
+            .Append("release-sequence=").Append(descriptor.ReleaseSequence.ToString(CultureInfo.InvariantCulture)).Append('\n')
+            .Append("published-at-utc=").Append(descriptor.PublishedAtUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)).Append('\n')
+            .Append("configuration=").Append(descriptor.Configuration).Append('\n')
+            .Append("runtime=").Append(descriptor.Runtime).Append('\n')
+            .Append("sdk-version=").Append(descriptor.SdkVersion).Append('\n')
+            .Append("release-notes-sha256=").Append(descriptor.ReleaseNotesSha256).Append('\n')
+            .Append("service-payload-validation=valid\n")
+            .Append("trusted-manifest-signature=valid\n")
+            .Append("release-metadata-signature=valid\n")
+            .Append("manifest-metadata-binding=valid\n")
+            .Append("trusted-manifest-release=").Append(service.TrustedManifestRelease).Append('\n')
+            .Append("release-metadata-display-version=").Append(service.ReleaseMetadataDisplayVersion).Append('\n')
+            .Append("trusted-manifest-sha256=").Append(service.TrustedManifestSha256).Append('\n')
+            .Append("authenticode-profile=").Append(record.AuthenticodeEvidence[0].SignerPolicyId).Append('\n')
+            .Append("authenticode-artifact-count=").Append(record.AuthenticodeEvidence.Count.ToString(CultureInfo.InvariantCulture)).Append('\n')
+            .Append("artifact-count=").Append(record.Artifacts.Count.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        foreach (var evidence in record.AuthenticodeEvidence)
+            text.Append("authenticode=").Append(evidence.RelativePath).Append('|').Append(evidence.Category).Append('|')
+                .Append(evidence.SignerPolicyId).Append('|').Append(evidence.PrimarySignatureCount).Append('|').Append(evidence.Timestamp).Append('\n');
+        foreach (var artifact in record.Artifacts)
+            text.Append("artifact=").Append(artifact.RelativePath).Append('|').Append(artifact.Sha256).Append('\n');
+        return Utf8.GetBytes(text.ToString());
+    }
+
+    public static bool TryParse(ReadOnlySpan<byte> bytes, out BetaReleaseRecord? record)
+    {
+        record = null;
+        if (bytes.Length is 0 or > 1024 * 1024 || bytes.IndexOf((byte)'\r') >= 0 || HasBom(bytes) || HasNonAscii(bytes)) return false;
+        string text;
+        try { text = Utf8.GetString(bytes); } catch (DecoderFallbackException) { return false; }
+        if (!text.EndsWith('\n')) return false;
+        var lines = text.Split('\n');
+        if (lines.Length < 20 || lines[^1].Length != 0) return false;
+        var fixedKeys = new[] { "schema", "source-commit", "release-version", "release-sequence", "published-at-utc", "configuration", "runtime", "sdk-version", "release-notes-sha256", "service-payload-validation", "trusted-manifest-signature", "release-metadata-signature", "manifest-metadata-binding", "trusted-manifest-release", "release-metadata-display-version", "trusted-manifest-sha256", "authenticode-profile", "authenticode-artifact-count", "artifact-count" };
+        var values = new string[fixedKeys.Length];
+        for (var index = 0; index < fixedKeys.Length; index++)
+        {
+            var prefix = fixedKeys[index] + "=";
+            if (!lines[index].StartsWith(prefix, StringComparison.Ordinal)) return false;
+            values[index] = lines[index][prefix.Length..];
+        }
+        if (values[0] != Schema || values[9] != "valid" || values[10] != "valid" || values[11] != "valid" || values[12] != "valid" ||
+            !uint.TryParse(values[17], NumberStyles.None, CultureInfo.InvariantCulture, out var evidenceCount) ||
+            !uint.TryParse(values[18], NumberStyles.None, CultureInfo.InvariantCulture, out var artifactCount) || evidenceCount == 0 || artifactCount == 0 ||
+            evidenceCount > int.MaxValue || artifactCount > int.MaxValue ||
+            (long)lines.Length != 20L + evidenceCount + artifactCount) return false;
+        var descriptorBytes = Utf8.GetBytes($"schema={BetaReleaseDescriptorCodec.Schema}\nsource-commit={values[1]}\nrelease-version={values[2]}\nrelease-sequence={values[3]}\npublished-at-utc={values[4]}\nconfiguration={values[5]}\nruntime={values[6]}\nsdk-version={values[7]}\nrelease-notes-sha256={values[8]}\n");
+        if (!BetaReleaseDescriptorCodec.TryParse(descriptorBytes, out var descriptor) || descriptor is null ||
+            values[13] != descriptor.ReleaseVersion || values[14] != descriptor.ReleaseVersion || !IsHash(values[15]) || string.IsNullOrWhiteSpace(values[16]) || values[16].Length > 128 || values[16].Any(char.IsControl)) return false;
+        var evidence = new List<AuthenticodeReleaseEvidence>(checked((int)evidenceCount));
+        for (var index = 0; index < evidenceCount; index++)
+        {
+            var parts = lines[19 + index].Split('|');
+            if (parts.Length != 5 || !lines[19 + index].StartsWith("authenticode=", StringComparison.Ordinal) ||
+                !Enum.TryParse<AuthenticodeVerificationCategory>(parts[1], false, out var category) ||
+                !Enum.TryParse<PrimarySignatureCountPolicyCategory>(parts[3], false, out var primary) ||
+                !Enum.TryParse<TimestampPolicyCategory>(parts[4], false, out var timestamp) ||
+                !IsRelativePath(parts[0]["authenticode=".Length..]) || parts[2] != values[16]) return false;
+            evidence.Add(new(parts[0]["authenticode=".Length..], category, parts[2], primary, timestamp));
+        }
+        var artifacts = new List<ReleaseArtifact>(checked((int)artifactCount));
+        for (var index = 0; index < artifactCount; index++)
+        {
+            var parts = lines[19 + evidenceCount + index].Split('|');
+            if (parts.Length != 2 || !lines[19 + evidenceCount + index].StartsWith("artifact=", StringComparison.Ordinal) ||
+                !IsRelativePath(parts[0]["artifact=".Length..]) || !IsHash(parts[1])) return false;
+            artifacts.Add(new(parts[0]["artifact=".Length..], parts[1]));
+        }
+        try
+        {
+            record = new(descriptor, new(values[13], values[14], descriptor.ReleaseSequence, values[15]), Array.AsReadOnly(artifacts.ToArray()), Array.AsReadOnly(evidence.ToArray()));
+            return bytes.SequenceEqual(CreateCanonical(record));
+        }
+        catch (ArgumentException) { record = null; return false; }
+    }
+
+    private static void Validate(BetaReleaseRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        if (record.AuthenticodeEvidence is null || record.Artifacts is null || record.AuthenticodeEvidence.Count == 0 || record.Artifacts.Count == 0 ||
+            record.AuthenticodeEvidence.Any(item => item is null || !IsRelativePath(item.RelativePath) || item.SignerPolicyId != record.AuthenticodeEvidence[0].SignerPolicyId || !Enum.IsDefined(item.Category) || !Enum.IsDefined(item.PrimarySignatureCount) || !Enum.IsDefined(item.Timestamp)) ||
+            record.Artifacts.Any(item => item is null || !IsRelativePath(item.RelativePath) || !IsHash(item.Sha256)) ||
+            record.AuthenticodeEvidence.Select(item => item.RelativePath).Distinct(StringComparer.Ordinal).Count() != record.AuthenticodeEvidence.Count ||
+            record.Artifacts.Select(item => item.RelativePath).Distinct(StringComparer.Ordinal).Count() != record.Artifacts.Count ||
+            !BetaReleaseDescriptorCodec.TryParse(BetaReleaseDescriptorCodec.CreateCanonical(record.Descriptor), out _) ||
+            record.ServicePayload.TrustedManifestRelease != record.Descriptor.ReleaseVersion || record.ServicePayload.ReleaseMetadataDisplayVersion != record.Descriptor.ReleaseVersion || record.ServicePayload.ReleaseSequence != record.Descriptor.ReleaseSequence || !IsHash(record.ServicePayload.TrustedManifestSha256))
+            throw new ArgumentException("Beta release record is not canonical.", nameof(record));
+    }
+    private static bool IsRelativePath(string? value) => value is { Length: > 0 and <= 512 } && value.All(value => value is >= '!' and <= '~') && !value.Contains('\\') && !value.Contains(':') && !value.StartsWith('/') && !value.Contains("//", StringComparison.Ordinal) && !value.Split('/').Any(part => part is "" or "." or "..");
+    private static bool IsHash(string? value) => value is { Length: 64 } && value.All(value => value is >= '0' and <= '9' or >= 'A' and <= 'F');
+    private static bool HasBom(ReadOnlySpan<byte> bytes) => bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
+    private static bool HasNonAscii(ReadOnlySpan<byte> bytes) { foreach (var value in bytes) if (value > 0x7f) return true; return false; }
+}
+
 public sealed class BetaReleaseLayoutValidator
 {
     public const string ReleaseNotesFileName = "release-notes.md";
@@ -262,33 +371,8 @@ public sealed class BetaReleaseLayoutValidator
     private static bool IsHash(string? value) => value is { Length: 64 } && value.All(value => value is >= '0' and <= '9' or >= 'A' and <= 'F');
     private static void WriteRecord(string root, BetaReleaseRecord record)
     {
-        var d = record.Descriptor; var s = record.ServicePayload;
-        var text = new StringBuilder()
-            .Append("schema=vantrel-beta-release-record-v1\n")
-            .Append("source-commit=").Append(d.SourceCommit).Append('\n')
-            .Append("release-version=").Append(d.ReleaseVersion).Append('\n')
-            .Append("release-sequence=").Append(d.ReleaseSequence.ToString(CultureInfo.InvariantCulture)).Append('\n')
-            .Append("published-at-utc=").Append(d.PublishedAtUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)).Append('\n')
-            .Append("configuration=").Append(d.Configuration).Append('\n')
-            .Append("runtime=").Append(d.Runtime).Append('\n')
-            .Append("sdk-version=").Append(d.SdkVersion).Append('\n')
-            .Append("release-notes-sha256=").Append(d.ReleaseNotesSha256).Append('\n')
-            .Append("service-payload-validation=valid\n")
-            .Append("trusted-manifest-signature=valid\n")
-            .Append("release-metadata-signature=valid\n")
-            .Append("manifest-metadata-binding=valid\n")
-            .Append("trusted-manifest-release=").Append(s.TrustedManifestRelease).Append('\n')
-            .Append("release-metadata-display-version=").Append(s.ReleaseMetadataDisplayVersion).Append('\n')
-            .Append("trusted-manifest-sha256=").Append(s.TrustedManifestSha256).Append('\n')
-            .Append("authenticode-profile=").Append(record.AuthenticodeEvidence[0].SignerPolicyId).Append('\n')
-            .Append("authenticode-artifact-count=").Append(record.AuthenticodeEvidence.Count.ToString(CultureInfo.InvariantCulture)).Append('\n')
-            .Append("artifact-count=").Append(record.Artifacts.Count.ToString(CultureInfo.InvariantCulture)).Append('\n');
-        foreach (var evidence in record.AuthenticodeEvidence)
-            text.Append("authenticode=").Append(evidence.RelativePath).Append('|').Append(evidence.Category).Append('|')
-                .Append(evidence.SignerPolicyId).Append('|').Append(evidence.PrimarySignatureCount).Append('|').Append(evidence.Timestamp).Append('\n');
-        foreach (var artifact in record.Artifacts) text.Append("artifact=").Append(artifact.RelativePath).Append('|').Append(artifact.Sha256).Append('\n');
         var finalPath = Path.Combine(root, RecordFileName); var temporary = finalPath + ".tmp";
-        try { File.WriteAllBytes(temporary, Utf8.GetBytes(text.ToString())); File.Move(temporary, finalPath); }
+        try { File.WriteAllBytes(temporary, BetaReleaseRecordCodec.CreateCanonical(record)); File.Move(temporary, finalPath); }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 }

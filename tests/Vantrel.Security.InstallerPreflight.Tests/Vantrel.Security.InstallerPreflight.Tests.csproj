@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
+    <PackageReference Include="MSTest.TestAdapter" Version="4.0.2" />
+    <PackageReference Include="MSTest.TestFramework" Version="4.0.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\tools\Vantrel.Security.InstallerPreflight\Vantrel.Security.InstallerPreflight.csproj" />
+    <ProjectReference Include="..\..\tools\Vantrel.Security.ReleaseLayoutTool\Vantrel.Security.ReleaseLayoutTool.csproj" />
+    <ProjectReference Include="..\..\tools\Vantrel.Security.ManifestTool\Vantrel.Security.ManifestTool.csproj" />
+  </ItemGroup>
+</Project>
