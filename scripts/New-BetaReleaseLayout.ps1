@@ -9,7 +9,8 @@ param(
     [string]$ReleaseVersion,
     [UInt64]$ReleaseSequence,
     [string]$PublishedAtUtc,
-    [string]$ReleaseNotesPath
+    [string]$ReleaseNotesPath,
+    [string]$SigningProfile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -101,6 +102,7 @@ if ($Phase -eq 'Prepare') {
 }
 else {
     if (-not (Test-Path -LiteralPath $output -PathType Container)) { throw 'Release output root is unavailable.' }
-    Invoke-Dotnet @('run', '--project', $layoutTool, '--configuration', 'Release', '--no-build', '--no-restore', '--', 'record', '--output-root', $output)
+    if ([string]::IsNullOrWhiteSpace($SigningProfile)) { throw 'Record requires a non-secret signing profile alias.' }
+    Invoke-Dotnet @('run', '--project', $layoutTool, '--configuration', 'Release', '--no-build', '--no-restore', '--', 'record', '--output-root', $output, '--signing-profile', $SigningProfile)
     Write-Host 'Validated beta release record written.'
 }

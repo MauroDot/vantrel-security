@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
+using Microsoft.Win32.SafeHandles;
 using System.Text;
 using Vantrel.Security.ManifestTool;
 using Vantrel.Security.ReleaseLayoutTool;
@@ -13,13 +14,27 @@ public sealed class BetaReleaseLayoutTests
     private const int PrivilegeNotHeldHResult = unchecked((int)0x80070522);
 
     [TestMethod]
+    public void Authenticode_allowlist_is_immutable_and_contains_only_the_expected_vantrel_owned_pe_paths()
+    {
+        var expected = new[]
+        {
+            "service/Vantrel.Security.Service.exe", "service/Vantrel.Security.Service.dll", "service/Vantrel.Security.Infrastructure.dll", "service/Vantrel.Security.Core.dll",
+            "desktop/Vantrel.Security.Desktop.exe", "desktop/Vantrel.Security.Desktop.dll", "desktop/Vantrel.Security.Infrastructure.dll", "desktop/Vantrel.Security.Core.dll",
+            "offline-update-tool/Vantrel.Security.OfflineUpdateTool.exe", "offline-update-tool/Vantrel.Security.OfflineUpdateTool.dll", "offline-update-tool/Vantrel.Security.Service.dll", "offline-update-tool/Vantrel.Security.Infrastructure.dll", "offline-update-tool/Vantrel.Security.Core.dll"
+        };
+
+        Assert.IsFalse(ReleaseSigningContract.VantrelOwnedPeArtifacts is ReleaseSigningArtifact[]);
+        CollectionAssert.AreEqual(expected, ReleaseSigningContract.VantrelOwnedPeArtifacts.Select(item => item.RelativePath).ToArray());
+    }
+
+    [TestMethod]
     public void Canonical_layout_writes_a_relative_complete_record_without_secret_retention()
     {
         using var scope = new LayoutScope();
         var record = scope.Validate();
         var text = File.ReadAllText(Path.Combine(scope.Root, BetaReleaseLayoutValidator.RecordFileName));
 
-        Assert.AreEqual(13, record.Artifacts.Count);
+        Assert.AreEqual(20, record.Artifacts.Count);
         Assert.IsTrue(record.Artifacts.Any(item => item.RelativePath == "desktop/Vantrel.Security.Desktop.exe"));
         Assert.IsTrue(record.Artifacts.Any(item => item.RelativePath == "offline-update-tool/Vantrel.Security.OfflineUpdateTool.exe"));
         Assert.IsFalse(text.Contains(scope.Root, StringComparison.OrdinalIgnoreCase));
@@ -39,7 +54,7 @@ public sealed class BetaReleaseLayoutTests
         scope.AddSyntheticServicePublicArtifacts();
 
         var record = scope.Validate();
-        Assert.AreEqual(13, record.Artifacts.Count);
+        Assert.AreEqual(20, record.Artifacts.Count);
     }
 
     [TestMethod]
@@ -107,7 +122,7 @@ public sealed class BetaReleaseLayoutTests
         var verifier = new HashCheckingVerifier(scope.Root);
         File.AppendAllText(Path.Combine(scope.Root, "service", "Vantrel.Security.Service.exe"), "changed");
 
-        Assert.ThrowsException<IOException>(() => new BetaReleaseLayoutValidator(verifier).ValidateAndWriteRecord(scope.Root));
+        Assert.ThrowsException<IOException>(() => new BetaReleaseLayoutValidator(verifier, TestAuthenticodeVerifier.Valid).ValidateAndWriteRecord(scope.Root, TestAuthenticodeVerifier.ProfileAlias));
         Assert.IsFalse(File.Exists(Path.Combine(scope.Root, BetaReleaseLayoutValidator.RecordFileName)));
     }
 
@@ -140,6 +155,116 @@ public sealed class BetaReleaseLayoutTests
         using var scope = new LayoutScope(new ThrowingVerifier());
 
         scope.AssertRejected();
+    }
+
+    [TestMethod]
+    public void Authenticode_success_verifies_only_the_immutable_vantrel_pe_allowlist_and_records_safe_evidence()
+    {
+        using var scope = new LayoutScope();
+        var native = new CapturingNativeVerifier(SuccessEvidence());
+        var record = scope.ValidateWith(CreateAuthenticator(native), TestAuthenticodeVerifier.ProfileAlias);
+        var text = File.ReadAllText(Path.Combine(scope.Root, BetaReleaseLayoutValidator.RecordFileName));
+
+        CollectionAssert.AreEqual(ReleaseSigningContract.VantrelOwnedPeArtifacts.Select(item => item.RelativePath).ToArray(),
+            native.Paths.Select(path => Path.GetRelativePath(scope.Root, path).Replace('\\', '/')).ToArray());
+        Assert.AreEqual(ReleaseSigningContract.VantrelOwnedPeArtifacts.Count, record.AuthenticodeEvidence.Count);
+        Assert.IsTrue(record.AuthenticodeEvidence.All(item => item.Category == AuthenticodeVerificationCategory.Valid));
+        StringAssert.Contains(text, "authenticode-profile=test-publisher-policy");
+        Assert.IsFalse(text.Contains(scope.Root, StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(text.Contains("certificate", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(text.Contains("0x", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public void Authenticode_closed_failure_categories_fail_closed_without_a_partial_record()
+    {
+        var cases = new (NativeAuthenticodeEvidence Evidence, AuthenticodeVerificationCategory Expected)[]
+        {
+            (new(NativeAuthenticodeTrustCategory.Unsigned, PrimarySignatureCountPolicyCategory.None, NativeDigestAlgorithmCategory.Indeterminate, TimestampPolicyCategory.Indeterminate, null), AuthenticodeVerificationCategory.Unsigned),
+            (new(NativeAuthenticodeTrustCategory.AlteredOrNonzero, PrimarySignatureCountPolicyCategory.Indeterminate, NativeDigestAlgorithmCategory.Indeterminate, TimestampPolicyCategory.Indeterminate, null), AuthenticodeVerificationCategory.AlteredOrTrustFailure),
+            (new(NativeAuthenticodeTrustCategory.RevocationOrNetworkUncertain, PrimarySignatureCountPolicyCategory.Indeterminate, NativeDigestAlgorithmCategory.Indeterminate, TimestampPolicyCategory.Indeterminate, null), AuthenticodeVerificationCategory.RevocationOrNetworkUncertain),
+            (new(NativeAuthenticodeTrustCategory.Unavailable, PrimarySignatureCountPolicyCategory.Indeterminate, NativeDigestAlgorithmCategory.Indeterminate, TimestampPolicyCategory.Indeterminate, null), AuthenticodeVerificationCategory.NativeUnavailable),
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.ValidRfc3161, new SignerCertificateEvidence(new string('D', 64))), AuthenticodeVerificationCategory.WrongPublisherPolicy),
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.Missing, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.MissingTimestamp),
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.LegacyOnly, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.MissingTimestamp),
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.Invalid, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.InvalidTimestamp),
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.UnsupportedAlgorithm, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.UnsupportedTimestampAlgorithm),
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Unsupported, TimestampPolicyCategory.ValidRfc3161, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.UnsupportedDigestAlgorithm),
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExtraOrDuplicate, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.ValidRfc3161, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.ExtraOrDuplicatePrimarySignature)
+            ,(new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.None, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.ValidRfc3161, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.Indeterminate)
+        };
+
+        foreach (var testCase in cases)
+        {
+            using var scope = new LayoutScope();
+            var authenticator = CreateAuthenticator(new CapturingNativeVerifier(testCase.Evidence));
+            var evidence = authenticator.Verify("service/Vantrel.Security.Service.exe", Path.Combine(scope.Root, "service", "Vantrel.Security.Service.exe"), TestAuthenticodeVerifier.ProfileAlias);
+
+            Assert.AreEqual(testCase.Expected, evidence.Category);
+            scope.AssertAuthenticodeRejected(authenticator, TestAuthenticodeVerifier.ProfileAlias);
+        }
+    }
+
+    [TestMethod]
+    public void Unknown_or_unconfigured_signing_profile_never_invokes_native_verification_or_writes_a_record()
+    {
+        using var scope = new LayoutScope();
+        var native = new CapturingNativeVerifier(SuccessEvidence());
+        var unknown = new ReleaseAuthenticodeVerifier(new EmptyProfileSource(), native);
+        Assert.AreEqual(AuthenticodeVerificationCategory.UnknownProfile, unknown.Verify("service/Vantrel.Security.Service.exe", Path.Combine(scope.Root, "service", "Vantrel.Security.Service.exe"), "unknown").Category);
+        scope.AssertAuthenticodeRejected(unknown, "unknown");
+        Assert.AreEqual(0, native.Paths.Count);
+
+        var unconfigured = new ReleaseAuthenticodeVerifier(new SourceOwnedReleaseSigningProfileSource(), native);
+        Assert.AreEqual(AuthenticodeVerificationCategory.UnconfiguredProfile, unconfigured.Verify("service/Vantrel.Security.Service.exe", Path.Combine(scope.Root, "service", "Vantrel.Security.Service.exe"), "vantrel-production").Category);
+        scope.AssertAuthenticodeRejected(unconfigured, "vantrel-production");
+        Assert.AreEqual(0, native.Paths.Count);
+    }
+
+    [TestMethod]
+    public void Native_unavailability_and_post_sign_mutation_fail_closed_without_record()
+    {
+        using (var unavailableScope = new LayoutScope())
+        {
+            var unavailable = CreateAuthenticator(new ThrowingNativeVerifier(new DllNotFoundException()));
+            Assert.AreEqual(AuthenticodeVerificationCategory.NativeUnavailable,
+                unavailable.Verify("service/Vantrel.Security.Service.exe", Path.Combine(unavailableScope.Root, "service", "Vantrel.Security.Service.exe"), TestAuthenticodeVerifier.ProfileAlias).Category);
+            unavailableScope.AssertAuthenticodeRejected(unavailable, TestAuthenticodeVerifier.ProfileAlias);
+        }
+
+        using var mutationScope = new LayoutScope();
+        mutationScope.AssertAuthenticodeRejected(CreateAuthenticator(new MutatingNativeVerifier(SuccessEvidence())), TestAuthenticodeVerifier.ProfileAlias);
+    }
+
+    [TestMethod]
+    public void Final_byte_binding_rejects_a_desktop_replacement_after_authenticode_verification()
+    {
+        using var scope = new LayoutScope(new PostVerificationMutatingServiceVerifier());
+        scope.AssertAuthenticodeRejected(CreateAuthenticator(new CapturingNativeVerifier(SuccessEvidence())), TestAuthenticodeVerifier.ProfileAlias);
+    }
+
+    [TestMethod]
+    public void Wintrust_call_is_disposed_for_success_nonzero_and_evidence_faults()
+    {
+        foreach (var behavior in new[] { WinTrustBehavior.Success, WinTrustBehavior.Nonzero, WinTrustBehavior.ResultFault })
+        {
+            var api = new FakeWinTrustApi(behavior);
+            _ = new WindowsAuthenticodeNativeVerifier(api, new FixedEvidenceReader(SuccessEvidence())).Verify("C:\\synthetic.exe", new SafeFileHandle(new IntPtr(1), ownsHandle: false));
+            Assert.AreEqual(1, api.DisposeCount, behavior.ToString());
+        }
+    }
+
+    [TestMethod]
+    public void Provider_evidence_failure_is_closed_and_releases_wintrust_state_once()
+    {
+        foreach (var error in new Exception[] { new AuthenticodeProviderUnavailableException(), new InvalidDataException(), new DllNotFoundException() })
+        {
+            var api = new FakeWinTrustApi(WinTrustBehavior.Success);
+            var result = new WindowsAuthenticodeNativeVerifier(api, new ThrowingEvidenceReader(error)).Verify("C:\\synthetic.exe", new SafeFileHandle(new IntPtr(1), ownsHandle: false));
+            Assert.IsTrue(result.Trust is NativeAuthenticodeTrustCategory.Unavailable or NativeAuthenticodeTrustCategory.Success);
+            Assert.AreEqual(PrimarySignatureCountPolicyCategory.Indeterminate, result.PrimarySignatureCount);
+            Assert.AreEqual(1, api.DisposeCount, error.GetType().Name);
+        }
     }
 
     [TestMethod]
@@ -281,6 +406,13 @@ public sealed class BetaReleaseLayoutTests
 
     private static bool IsPrivilegeNotHeld(Exception error) => error.HResult == PrivilegeNotHeldHResult;
 
+    private static NativeAuthenticodeEvidence SuccessEvidence() => new(NativeAuthenticodeTrustCategory.Success,
+        PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256,
+        TimestampPolicyCategory.ValidRfc3161, new SignerCertificateEvidence(new string('C', 64)));
+
+    private static ReleaseAuthenticodeVerifier CreateAuthenticator(IAuthenticodeNativeVerifier native) =>
+        new(new TestProfileSource(), native);
+
     private static string[] Snapshot(string root) => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
         .Select(path => Path.GetRelativePath(root, path).Replace('\\', '/') + "|" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))))
         .OrderBy(value => value, StringComparer.Ordinal).ToArray();
@@ -369,7 +501,12 @@ public sealed class BetaReleaseLayoutTests
             "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(Root, "scripts", "New-BetaReleaseLayout.ps1"),
             "-Phase", "Prepare", "-OutputRoot", output, "-SourceCommit", Commit, "-ReleaseVersion", version,
             "-ReleaseSequence", "1", "-PublishedAtUtc", "2026-10-04T00:00:00Z", "-ReleaseNotesPath", _notes
-        ]);
+        ], environment: new Dictionary<string, string>
+        {
+            ["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1",
+            ["MSBUILDDISABLENODEREUSE"] = "1",
+            ["DOTNET_CLI_HOME"] = Path.Combine(Root, ".dotnet-home")
+        });
 
         public void Dispose()
         {
@@ -479,6 +616,9 @@ public sealed class BetaReleaseLayoutTests
             else foreach (var name in ReleasePayloadVerifier.ExactFileNames) File(Path.Combine("service", name), name);
             File("desktop/Vantrel.Security.Desktop.exe", "desktop");
             File("offline-update-tool/Vantrel.Security.OfflineUpdateTool.exe", "tool");
+            foreach (var artifact in ReleaseSigningContract.VantrelOwnedPeArtifacts)
+                if ((!rawServicePublish || !artifact.RelativePath.StartsWith("service/", StringComparison.Ordinal)) &&
+                    !System.IO.File.Exists(Path.Combine(Root, artifact.RelativePath))) File(artifact.RelativePath, "owned");
         }
 
         internal void File(string relative, string contents)
@@ -490,7 +630,14 @@ public sealed class BetaReleaseLayoutTests
             File("service/Vantrel.Security.TrustedManifest", "manifest");
             File("service/Vantrel.Security.ReleaseMetadata", "metadata");
         }
-        internal BetaReleaseRecord Validate() => new BetaReleaseLayoutValidator(_verifier).ValidateAndWriteRecord(Root);
+        internal BetaReleaseRecord Validate() => new BetaReleaseLayoutValidator(_verifier, TestAuthenticodeVerifier.Valid).ValidateAndWriteRecord(Root, TestAuthenticodeVerifier.ProfileAlias);
+        internal BetaReleaseRecord ValidateWith(ReleaseAuthenticodeVerifier authenticator, string profile) =>
+            new BetaReleaseLayoutValidator(_verifier, authenticator).ValidateAndWriteRecord(Root, profile);
+        internal void AssertAuthenticodeRejected(ReleaseAuthenticodeVerifier authenticator, string profile)
+        {
+            Assert.ThrowsException<IOException>(() => ValidateWith(authenticator, profile));
+            Assert.IsFalse(System.IO.File.Exists(Path.Combine(Root, BetaReleaseLayoutValidator.RecordFileName)));
+        }
         internal void AssertRejected()
         {
             Assert.ThrowsException<IOException>(() => Validate());
@@ -507,6 +654,15 @@ public sealed class BetaReleaseLayoutTests
     private sealed class ThrowingVerifier : IServicePayloadSignatureVerifier
     {
         public VerifiedServicePayload Verify(string payloadDirectory) => throw new InvalidDataException("synthetic failure");
+    }
+    private sealed class PostVerificationMutatingServiceVerifier : IServicePayloadSignatureVerifier
+    {
+        public VerifiedServicePayload Verify(string payloadDirectory)
+        {
+            var root = Directory.GetParent(payloadDirectory)!.FullName;
+            File.AppendAllText(Path.Combine(root, "desktop", "Vantrel.Security.Desktop.dll"), "replaced-after-authenticode");
+            return new VerifiedServicePayload("0.1.0-beta.1", "0.1.0-beta.1", 7, new string('B', 64));
+        }
     }
     private sealed class HashCheckingVerifier : IServicePayloadSignatureVerifier
     {
@@ -529,5 +685,81 @@ public sealed class BetaReleaseLayoutTests
         }
 
         private static string Hash(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
+    }
+
+    private sealed class TestAuthenticodeVerifier : IAuthenticodeNativeVerifier
+    {
+        internal const string ProfileAlias = "test-signing-profile";
+        internal static readonly ReleaseAuthenticodeVerifier Valid = new(new TestProfileSource(), new TestAuthenticodeVerifier());
+
+        public NativeAuthenticodeEvidence Verify(string absolutePath, SafeFileHandle fileHandle) =>
+            new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne,
+                NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.ValidRfc3161, new SignerCertificateEvidence(new string('C', 64)));
+    }
+
+    private sealed class TestProfileSource : IReleaseSigningProfileSource
+    {
+        public bool TryGet(string alias, out ReleaseSigningProfile profile)
+        {
+            profile = new ReleaseSigningProfile(TestAuthenticodeVerifier.ProfileAlias, "test-publisher-policy", new ExactCertificateSha256SigningPolicy(new string('C', 64)));
+            return string.Equals(alias, TestAuthenticodeVerifier.ProfileAlias, StringComparison.Ordinal);
+        }
+    }
+
+    private sealed class EmptyProfileSource : IReleaseSigningProfileSource
+    {
+        public bool TryGet(string alias, out ReleaseSigningProfile profile) { profile = null!; return false; }
+    }
+
+    private sealed class CapturingNativeVerifier(NativeAuthenticodeEvidence evidence) : IAuthenticodeNativeVerifier
+    {
+        internal List<string> Paths { get; } = [];
+        public NativeAuthenticodeEvidence Verify(string absolutePath, SafeFileHandle fileHandle) { Paths.Add(absolutePath); return evidence; }
+    }
+
+    private sealed class ThrowingNativeVerifier(Exception error) : IAuthenticodeNativeVerifier
+    {
+        public NativeAuthenticodeEvidence Verify(string absolutePath, SafeFileHandle fileHandle) => throw error;
+    }
+
+    private sealed class FixedEvidenceReader(NativeAuthenticodeEvidence evidence) : IWinTrustProviderEvidenceReader
+    {
+        public NativeAuthenticodeEvidence Read(IWinTrustNativeCall call) => evidence;
+    }
+
+    private sealed class ThrowingEvidenceReader(Exception error) : IWinTrustProviderEvidenceReader
+    {
+        public NativeAuthenticodeEvidence Read(IWinTrustNativeCall call) => throw error;
+    }
+
+    private sealed class MutatingNativeVerifier(NativeAuthenticodeEvidence evidence) : IAuthenticodeNativeVerifier
+    {
+        public NativeAuthenticodeEvidence Verify(string absolutePath, SafeFileHandle fileHandle)
+        {
+            File.AppendAllText(absolutePath, "changed-after-signing");
+            return evidence;
+        }
+    }
+
+    private enum WinTrustBehavior { Success, Nonzero, ResultFault }
+
+    private sealed class FakeWinTrustApi(WinTrustBehavior behavior) : IWinTrustNativeApi
+    {
+        internal int DisposeCount { get; private set; }
+        public IWinTrustNativeCall BeginFileVerification(string absolutePath, SafeFileHandle fileHandle) => new FakeWinTrustCall(behavior, () => DisposeCount++);
+    }
+
+    private sealed class FakeWinTrustCall(WinTrustBehavior behavior, Action dispose) : IWinTrustNativeCall
+    {
+        public int NativeResult => behavior switch
+        {
+            WinTrustBehavior.Success => 0,
+            WinTrustBehavior.Nonzero => unchecked((int)0x800B0100),
+            _ => throw new InvalidOperationException("synthetic native result fault")
+        };
+
+        public IntPtr StateHandle => IntPtr.Zero;
+        public string FilePath => "C:\\synthetic.exe";
+        public void Dispose() => dispose();
     }
 }

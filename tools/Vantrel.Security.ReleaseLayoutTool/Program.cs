@@ -29,8 +29,8 @@ try
     }
     else if (command == "record")
     {
-        RequireExactKeys(values, "--output-root");
-        new BetaReleaseLayoutValidator().ValidateAndWriteRecord(Required(values, "--output-root"));
+        RequireExactKeys(values, "--output-root", "--signing-profile");
+        new BetaReleaseLayoutValidator().ValidateAndWriteRecord(Required(values, "--output-root"), Required(values, "--signing-profile"));
     }
     else throw new ArgumentException();
 }

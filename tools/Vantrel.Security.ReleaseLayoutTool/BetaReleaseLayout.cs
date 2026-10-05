@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 using Vantrel.Security.ManifestTool;
 
 namespace Vantrel.Security.ReleaseLayoutTool;
@@ -75,7 +76,8 @@ public sealed class ExistingServicePayloadSignatureVerifier : IServicePayloadSig
 
 public sealed record ReleaseArtifact(string RelativePath, string Sha256);
 public sealed record BetaReleaseRecord(BetaReleaseDescriptor Descriptor, VerifiedServicePayload ServicePayload,
-    IReadOnlyList<ReleaseArtifact> Artifacts);
+    IReadOnlyList<ReleaseArtifact> Artifacts, IReadOnlyList<AuthenticodeReleaseEvidence> AuthenticodeEvidence);
+internal sealed record VerifiedAuthenticodeArtifact(AuthenticodeReleaseEvidence Evidence, string VerifiedSha256);
 
 public sealed class BetaReleaseLayoutValidator
 {
@@ -87,11 +89,16 @@ public sealed class BetaReleaseLayoutValidator
     private static readonly UTF8Encoding Utf8 = new(false, true);
     private static readonly HashSet<string> SecretExtensions = new(StringComparer.OrdinalIgnoreCase) { ".pk8", ".pem", ".key", ".pfx", ".p12", ".snk" };
     private readonly IServicePayloadSignatureVerifier _signatureVerifier;
+    private readonly ReleaseAuthenticodeVerifier _authenticodeVerifier;
 
-    public BetaReleaseLayoutValidator(IServicePayloadSignatureVerifier? signatureVerifier = null) =>
+    public BetaReleaseLayoutValidator(IServicePayloadSignatureVerifier? signatureVerifier = null,
+        ReleaseAuthenticodeVerifier? authenticodeVerifier = null)
+    {
         _signatureVerifier = signatureVerifier ?? new ExistingServicePayloadSignatureVerifier();
+        _authenticodeVerifier = authenticodeVerifier ?? new ReleaseAuthenticodeVerifier();
+    }
 
-    public BetaReleaseRecord ValidateAndWriteRecord(string outputRoot)
+    public BetaReleaseRecord ValidateAndWriteRecord(string outputRoot, string signingProfile)
     {
         var root = RequireDirectory(outputRoot);
         var recordPath = Path.Combine(root, RecordFileName);
@@ -115,6 +122,7 @@ public sealed class BetaReleaseLayoutValidator
         RequireRegularFile(Path.Combine(desktop, "Vantrel.Security.Desktop.exe"));
         RequireRegularFile(Path.Combine(offlineUpdateTool, "Vantrel.Security.OfflineUpdateTool.exe"));
         ValidateFlatExactServiceDirectory(service);
+        var verifiedAuthenticodeArtifacts = VerifyAuthenticode(root, signingProfile);
         VerifiedServicePayload servicePayload;
         try { servicePayload = _signatureVerifier.Verify(service); }
         catch (Exception) { throw new IOException("Service payload signature verification failed."); }
@@ -131,9 +139,59 @@ public sealed class BetaReleaseLayoutValidator
         artifacts.AddRange(CollectArtifacts(root, DesktopDirectoryName, requireFiles: true));
         artifacts.AddRange(CollectArtifacts(root, OfflineUpdateToolDirectoryName, requireFiles: true));
         var ordered = artifacts.OrderBy(item => item.RelativePath, StringComparer.Ordinal).ToArray();
-        var releaseRecord = new BetaReleaseRecord(descriptor, servicePayload, ordered);
+        ValidateFinalAuthenticodeBindings(root, ordered, verifiedAuthenticodeArtifacts);
+        var releaseRecord = new BetaReleaseRecord(descriptor, servicePayload, ordered,
+            verifiedAuthenticodeArtifacts.Select(item => item.Evidence).ToArray());
         WriteRecord(root, releaseRecord);
         return releaseRecord;
+    }
+
+    private IReadOnlyList<VerifiedAuthenticodeArtifact> VerifyAuthenticode(string root, string signingProfile)
+    {
+        if (string.IsNullOrWhiteSpace(signingProfile)) throw new IOException("Release signing profile is unavailable.");
+        var result = new List<VerifiedAuthenticodeArtifact>(ReleaseSigningContract.VantrelOwnedPeArtifacts.Count);
+        foreach (var artifact in ReleaseSigningContract.VantrelOwnedPeArtifacts)
+        {
+            var path = Path.Combine(root, artifact.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+            RequireRegularFile(path);
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.SequentialScan);
+            var before = HashOpenReleaseArtifact(stream, path);
+            var evidence = _authenticodeVerifier.Verify(artifact.RelativePath, path, signingProfile, stream.SafeFileHandle);
+            var after = HashOpenReleaseArtifact(stream, path);
+            if (!string.Equals(before, after, StringComparison.Ordinal)) throw new IOException("Release artifact changed during Authenticode verification.");
+            if (evidence.Category != AuthenticodeVerificationCategory.Valid) throw new IOException("Release Authenticode verification failed.");
+            result.Add(new VerifiedAuthenticodeArtifact(evidence, after));
+        }
+        return result;
+    }
+
+    private static string HashOpenReleaseArtifact(FileStream stream, string path)
+    {
+        var before = new FileInfo(path);
+        if (!before.Exists || IsReparse(path) || IsSecret(path) || stream.SafeFileHandle.IsInvalid || stream.SafeFileHandle.IsClosed)
+            throw new IOException("Release artifact is unsafe.");
+        stream.Position = 0;
+        var hash = Convert.ToHexString(SHA256.HashData(stream));
+        var after = new FileInfo(path);
+        if (!after.Exists || IsReparse(path) || IsSecret(path) || before.Length != after.Length || before.LastWriteTimeUtc != after.LastWriteTimeUtc)
+            throw new IOException("Release artifact changed while hashing.");
+        return hash;
+    }
+
+    private static void ValidateFinalAuthenticodeBindings(string root, IReadOnlyList<ReleaseArtifact> artifacts,
+        IReadOnlyList<VerifiedAuthenticodeArtifact> verifiedArtifacts)
+    {
+        if (verifiedArtifacts.Count != ReleaseSigningContract.VantrelOwnedPeArtifacts.Count) throw new IOException("Release Authenticode verification is incomplete.");
+        var recorded = artifacts.ToDictionary(item => item.RelativePath, item => item.Sha256, StringComparer.Ordinal);
+        foreach (var verified in verifiedArtifacts)
+        {
+            var path = Path.Combine(root, verified.Evidence.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+            var final = HashFile(path);
+            if (!string.Equals(final, verified.VerifiedSha256, StringComparison.Ordinal) ||
+                !recorded.TryGetValue(verified.Evidence.RelativePath, out var recordedHash) ||
+                !string.Equals(recordedHash, verified.VerifiedSha256, StringComparison.Ordinal))
+                throw new IOException("Release artifact changed after Authenticode verification.");
+        }
     }
 
     private static string RequireDirectory(string path)
@@ -222,7 +280,12 @@ public sealed class BetaReleaseLayoutValidator
             .Append("trusted-manifest-release=").Append(s.TrustedManifestRelease).Append('\n')
             .Append("release-metadata-display-version=").Append(s.ReleaseMetadataDisplayVersion).Append('\n')
             .Append("trusted-manifest-sha256=").Append(s.TrustedManifestSha256).Append('\n')
+            .Append("authenticode-profile=").Append(record.AuthenticodeEvidence[0].SignerPolicyId).Append('\n')
+            .Append("authenticode-artifact-count=").Append(record.AuthenticodeEvidence.Count.ToString(CultureInfo.InvariantCulture)).Append('\n')
             .Append("artifact-count=").Append(record.Artifacts.Count.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        foreach (var evidence in record.AuthenticodeEvidence)
+            text.Append("authenticode=").Append(evidence.RelativePath).Append('|').Append(evidence.Category).Append('|')
+                .Append(evidence.SignerPolicyId).Append('|').Append(evidence.PrimarySignatureCount).Append('|').Append(evidence.Timestamp).Append('\n');
         foreach (var artifact in record.Artifacts) text.Append("artifact=").Append(artifact.RelativePath).Append('|').Append(artifact.Sha256).Append('\n');
         var finalPath = Path.Combine(root, RecordFileName); var temporary = finalPath + ".tmp";
         try { File.WriteAllBytes(temporary, Utf8.GetBytes(text.ToString())); File.Move(temporary, finalPath); }
