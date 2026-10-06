@@ -16,4 +16,6 @@ Reproducible build inputs establish what was built; later external Authenticode 
 
 A completed release layout can be passed to the build-only InstallerPreflight tool with an explicit Windows Installer numeric product version. It verifies the canonical release record, final layout hashes, exact nine-file Service payload, and eligible Desktop and OfflineUpdateTool artifacts, then emits an installer-input plan. The plan is not an MSI and cannot install, repair, upgrade, downgrade, uninstall, start a service, create ProgramData, or coordinate an offline update transaction.
 
-No installer is produced yet. Existing development management scripts remain separate and are not beta installer tooling.
+The WiX Toolset v7 first-install authoring project consumes only that validated plan. It creates a per-machine x64 MSI model for the fixed Program Files Service, Desktop, and OfflineUpdateTool payloads; registers the LocalService demand-start service without starting it; registers the Application Event Log message resource; and adds one non-advertised all-users Start-menu shortcut. It excludes ProgramData and all update, policy, journal, backup, staging, private-candidate, and lock roots. The MSI has no custom actions and does not implement repair, upgrade, downgrade, rollback coordination, or uninstall coordination. It is not a signed or distributable beta installer.
+
+Existing development management scripts remain separate and are not beta installer tooling.

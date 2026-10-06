@@ -2,9 +2,12 @@ using Vantrel.Security.InstallerPreflight;
 
 try
 {
-    if (args.Length != 7 || args[0] != "create-plan" || args[1] != "--output-root" || args[3] != "--msi-product-version" || args[5] != "--plan-output")
+    if (args.Length == 7 && args[0] == "create-plan" && args[1] == "--output-root" && args[3] == "--msi-product-version" && args[5] == "--plan-output")
+        new InstallerInputValidator().CreateAndWritePlan(args[2], args[4], args[6]);
+    else if (args.Length == 7 && args[0] == "emit-wix" && args[1] == "--output-root" && args[3] == "--installer-plan" && args[5] == "--wix-output")
+        WixFirstInstallAuthoring.ValidateAndWrite(args[2], args[4], args[6]);
+    else
         throw new ArgumentException();
-    new InstallerInputValidator().CreateAndWritePlan(args[2], args[4], args[6]);
 }
 catch
 {

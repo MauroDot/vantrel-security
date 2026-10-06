@@ -167,8 +167,8 @@ public sealed class InstallerInputValidator
             throw new IOException("Release directory does not match its record.");
     }
 
-    private static bool IsInstallArtifact(string relativePath) => relativePath.StartsWith("service/", StringComparison.Ordinal) || relativePath.StartsWith("desktop/", StringComparison.Ordinal) || relativePath.StartsWith("offline-update-tool/", StringComparison.Ordinal);
-    private static InstallerDestination DestinationFor(string relativePath)
+    internal static bool IsInstallArtifact(string relativePath) => relativePath.StartsWith("service/", StringComparison.Ordinal) || relativePath.StartsWith("desktop/", StringComparison.Ordinal) || relativePath.StartsWith("offline-update-tool/", StringComparison.Ordinal);
+    internal static InstallerDestination DestinationFor(string relativePath)
     {
         var slash = relativePath.IndexOf('/');
         var child = relativePath[(slash + 1)..].Replace('/', '\\');
@@ -182,9 +182,9 @@ public sealed class InstallerInputValidator
         return new("ProgramFiles64Folder", directory["ProgramFiles64Folder\\".Length..] + "\\" + child);
     }
 
-    private static bool IsAllowedArtifactPath(string path)
+    internal static bool IsAllowedArtifactPath(string path)
     {
-        if (string.IsNullOrWhiteSpace(path) || path.Length > 512 || path.Contains("//", StringComparison.Ordinal) || path.Split('/').Any(segment => segment is "" or "." or ".." || ForbiddenSegments.Contains(segment))) return false;
+        if (string.IsNullOrWhiteSpace(path) || path.Length > 512 || path.Contains(':') || path.Contains('\\') || path.Contains("//", StringComparison.Ordinal) || path.Split('/').Any(segment => segment is "" or "." or ".." || ForbiddenSegments.Contains(segment))) return false;
         var fileName = Path.GetFileName(path);
         if (SecretExtensions.Contains(Path.GetExtension(fileName)) || ForbiddenExtensions.Contains(Path.GetExtension(fileName)) ||
             fileName.Equals("packages.lock.json", StringComparison.OrdinalIgnoreCase) || fileName.Contains("manifesttool", StringComparison.OrdinalIgnoreCase) || fileName.Contains("releaselay", StringComparison.OrdinalIgnoreCase) || fileName.Contains("installerpreflight", StringComparison.OrdinalIgnoreCase)) return false;
@@ -232,9 +232,11 @@ public sealed class InstallerInputValidator
     public static string CreateCanonicalPlan(InstallerInputPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        if (!MsiProductVersion.TryParse(plan.MsiProductVersion, out _) || plan.Artifacts.Count == 0 ||
+        if (!MsiProductVersion.TryParse(plan.MsiProductVersion, out _) || plan.Installation != InitialInstallContract.Model ||
+            !BetaReleaseDescriptorCodec.TryParse(BetaReleaseDescriptorCodec.CreateCanonical(plan.Descriptor), out _) || plan.Artifacts.Count == 0 ||
             plan.Artifacts.Any(item => item is null || !IsInstallArtifact(item.SourceRelativePath) || item.Destination.DirectoryId != "ProgramFiles64Folder" ||
-                item.Destination.RelativePath.Contains(':') || !IsHash(item.Sha256)))
+                item.Destination != DestinationFor(item.SourceRelativePath) || !IsAllowedArtifactPath(item.SourceRelativePath) || !IsHash(item.Sha256)) ||
+            plan.Artifacts.Select(item => item.SourceRelativePath).Distinct(StringComparer.OrdinalIgnoreCase).Count() != plan.Artifacts.Count)
             throw new ArgumentException("Installer input plan is not canonical.", nameof(plan));
         var descriptor = plan.Descriptor;
         var output = new StringBuilder()
@@ -242,6 +244,11 @@ public sealed class InstallerInputValidator
             .Append("source-commit=").Append(descriptor.SourceCommit).Append('\n')
             .Append("release-version=").Append(descriptor.ReleaseVersion).Append('\n')
             .Append("release-sequence=").Append(descriptor.ReleaseSequence.ToString(CultureInfo.InvariantCulture)).Append('\n')
+            .Append("published-at-utc=").Append(descriptor.PublishedAtUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)).Append('\n')
+            .Append("configuration=").Append(descriptor.Configuration).Append('\n')
+            .Append("runtime=").Append(descriptor.Runtime).Append('\n')
+            .Append("sdk-version=").Append(descriptor.SdkVersion).Append('\n')
+            .Append("release-notes-sha256=").Append(descriptor.ReleaseNotesSha256).Append('\n')
             .Append("msi-product-version=").Append(plan.MsiProductVersion).Append('\n')
             .Append("service-directory=").Append(plan.Installation.ServiceDirectory).Append('\n')
             .Append("desktop-directory=").Append(plan.Installation.DesktopDirectory).Append('\n')
@@ -256,6 +263,7 @@ public sealed class InstallerInputValidator
             .Append("event-log-name=").Append(plan.Installation.EventLog.LogName).Append('\n')
             .Append("event-log-message-resource=").Append(plan.Installation.EventLog.MessageResource.DirectoryId).Append('\\').Append(plan.Installation.EventLog.MessageResource.RelativePath).Append('\n')
             .Append("desktop-shortcut=all-users-non-advertised\ndesktop-shortcut-elevation=none\ndesktop-shortcut-service-start=none\ndesktop-shortcut-updater-action=none\n")
+            .Append("desktop-shortcut-target=").Append(plan.Installation.DesktopShortcut.Target.DirectoryId).Append('\\').Append(plan.Installation.DesktopShortcut.Target.RelativePath).Append('\n')
             .Append("programdata=excluded\nfuture-operations=unsupported\nartifact-count=").Append(plan.Artifacts.Count.ToString(CultureInfo.InvariantCulture)).Append('\n');
         foreach (var artifact in plan.Artifacts.OrderBy(item => item.SourceRelativePath, StringComparer.Ordinal))
             output.Append("artifact=").Append(artifact.SourceRelativePath).Append('|').Append(artifact.Destination.DirectoryId).Append('\\').Append(artifact.Destination.RelativePath).Append('|').Append(artifact.Sha256).Append('\n');

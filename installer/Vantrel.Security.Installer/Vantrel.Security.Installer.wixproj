@@ -1,0 +1,27 @@
+<Project Sdk="WixToolset.Sdk/7.0.0">
+  <PropertyGroup>
+    <AcceptEula>wix7</AcceptEula>
+    <OutputType>Package</OutputType>
+    <OutputName>VantrelSecurity</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <!-- Scope="perMachine" resolves ProgramMenuFolder for all users; these ICEs cannot infer that package scope. -->
+    <SuppressIces>ICE43;ICE57</SuppressIces>
+    <InstallerInputPlan Condition="'$(InstallerInputPlan)' == ''"></InstallerInputPlan>
+    <ReleaseLayoutRoot Condition="'$(ReleaseLayoutRoot)' == ''"></ReleaseLayoutRoot>
+    <GeneratedAuthoringPath>$(MSBuildProjectDirectory)\obj\$(Configuration)\Vantrel.Security.FirstInstall.wxs</GeneratedAuthoringPath>
+    <InstallerPreflightProject>$(MSBuildThisFileDirectory)..\..\tools\Vantrel.Security.InstallerPreflight\Vantrel.Security.InstallerPreflight.csproj</InstallerPreflightProject>
+    <InstallerPreflightAssembly>$(MSBuildThisFileDirectory)..\..\tools\Vantrel.Security.InstallerPreflight\bin\$(Configuration)\net10.0-windows\Vantrel.Security.InstallerPreflight.dll</InstallerPreflightAssembly>
+    <DefineConstants>ReleaseLayoutRoot=$(ReleaseLayoutRoot)</DefineConstants>
+    <CoreCompileDependsOn>GenerateValidatedFirstInstallAuthoring;$(CoreCompileDependsOn)</CoreCompileDependsOn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="$(GeneratedAuthoringPath)" />
+  </ItemGroup>
+
+  <Target Name="GenerateValidatedFirstInstallAuthoring">
+    <Error Condition="'$(InstallerInputPlan)' == '' or '$(ReleaseLayoutRoot)' == ''" Text="InstallerInputPlan and ReleaseLayoutRoot are required." />
+    <MSBuild Projects="$(InstallerPreflightProject)" Targets="Build" Properties="Configuration=$(Configuration)" RemoveProperties="OutputPath;BaseOutputPath" />
+    <Exec Command="dotnet &quot;$(InstallerPreflightAssembly)&quot; emit-wix --output-root &quot;$(ReleaseLayoutRoot)&quot; --installer-plan &quot;$(InstallerInputPlan)&quot; --wix-output &quot;$(GeneratedAuthoringPath)&quot;" />
+  </Target>
+</Project>
