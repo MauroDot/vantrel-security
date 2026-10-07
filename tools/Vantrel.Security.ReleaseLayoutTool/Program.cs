@@ -32,6 +32,11 @@ try
         RequireExactKeys(values, "--output-root", "--signing-profile");
         new BetaReleaseLayoutValidator().ValidateAndWriteRecord(Required(values, "--output-root"), Required(values, "--signing-profile"));
     }
+    else if (command == "inspect-authenticode")
+    {
+        RequireExactKeys(values, "--file");
+        Console.Out.Write(SinglePeAuthenticodeInspectionOutput.Create(new SinglePeAuthenticodeInspector().Inspect(Required(values, "--file"))));
+    }
     else throw new ArgumentException();
 }
 catch
