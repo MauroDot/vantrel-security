@@ -93,8 +93,8 @@ public sealed class SourceOwnedReleaseSigningProfileSource : IReleaseSigningProf
 {
     private static readonly IReadOnlyList<ReleaseSigningProfile> Profiles = Array.AsReadOnly(new ReleaseSigningProfile[]
     {
-        // No Azure Artifact Signing profile is provisioned in source. This policy cannot approve a release.
-        new("vantrel-production", "vantrel-azure-artifact-signing-unprovisioned", null)
+        new("vantrel-production", "vantrel-azure-artifact-signing-durable-eku-v1",
+            new AzureArtifactSigningEkuPolicy(AzureArtifactSigningEkuPolicy.VantrelCertificateProfileEku))
     });
     public bool TryGet(string alias, out ReleaseSigningProfile profile)
     {

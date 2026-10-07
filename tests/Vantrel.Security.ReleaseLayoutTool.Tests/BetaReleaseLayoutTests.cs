@@ -206,19 +206,37 @@ public sealed class BetaReleaseLayoutTests
     }
 
     [TestMethod]
-    public void Unknown_or_unconfigured_signing_profile_never_invokes_native_verification_or_writes_a_record()
+    public void Unknown_signing_profile_never_invokes_native_verification_or_writes_a_record()
     {
         using var scope = new LayoutScope();
         var native = new CapturingNativeVerifier(SuccessEvidence());
-        var unknown = new ReleaseAuthenticodeVerifier(new EmptyProfileSource(), native);
+        var unknown = new ReleaseAuthenticodeVerifier(new SourceOwnedReleaseSigningProfileSource(), native);
         Assert.AreEqual(AuthenticodeVerificationCategory.UnknownProfile, unknown.Verify("service/Vantrel.Security.Service.exe", Path.Combine(scope.Root, "service", "Vantrel.Security.Service.exe"), "unknown").Category);
         scope.AssertAuthenticodeRejected(unknown, "unknown");
         Assert.AreEqual(0, native.Paths.Count);
 
-        var unconfigured = new ReleaseAuthenticodeVerifier(new SourceOwnedReleaseSigningProfileSource(), native);
-        Assert.AreEqual(AuthenticodeVerificationCategory.UnconfiguredProfile, unconfigured.Verify("service/Vantrel.Security.Service.exe", Path.Combine(scope.Root, "service", "Vantrel.Security.Service.exe"), "vantrel-production").Category);
-        scope.AssertAuthenticodeRejected(unconfigured, "vantrel-production");
         Assert.AreEqual(0, native.Paths.Count);
+    }
+
+    [TestMethod]
+    public void Source_owned_production_profile_is_configured_with_only_the_exact_durable_eku_policy()
+    {
+        var source = new SourceOwnedReleaseSigningProfileSource();
+
+        Assert.IsTrue(source.TryGet("vantrel-production", out var profile));
+        Assert.IsTrue(profile.IsConfigured);
+        Assert.AreEqual("vantrel-azure-artifact-signing-durable-eku-v1", profile.PolicyId);
+        Assert.IsInstanceOfType<AzureArtifactSigningEkuPolicy>(profile.PublisherPolicy);
+        Assert.IsTrue(profile.PublisherPolicy!.Matches(Signer(new string('C', 64))));
+        Assert.IsTrue(profile.PublisherPolicy.Matches(Signer(new string('D', 64))));
+        Assert.IsFalse(profile.PublisherPolicy.Matches(Signer(new string('C', 64), AzureArtifactSigningEkuPolicy.CodeSigningEku, AzureArtifactSigningEkuPolicy.AzureArtifactSigningPublicTrustEku)));
+        Assert.IsFalse(profile.PublisherPolicy.Matches(Signer(new string('C', 64), AzureArtifactSigningEkuPolicy.CodeSigningEku, AzureArtifactSigningEkuPolicy.VantrelCertificateProfileEku)));
+        Assert.IsFalse(profile.PublisherPolicy.Matches(Signer(new string('C', 64), AzureArtifactSigningEkuPolicy.AzureArtifactSigningPublicTrustEku, AzureArtifactSigningEkuPolicy.VantrelCertificateProfileEku)));
+        Assert.IsFalse(profile.PublisherPolicy.Matches(Signer(new string('C', 64), AzureArtifactSigningEkuPolicy.CodeSigningEku, AzureArtifactSigningEkuPolicy.AzureArtifactSigningPublicTrustEku, "1.3.6.1.4.1.311.97.790899309.69055806.5460467.69741028")));
+        Assert.IsFalse(profile.PublisherPolicy.Matches(Signer(new string('C', 64), "1.3.6.1.4.1.311.97.1.0")));
+        Assert.ThrowsException<ArgumentException>(() => new SignerCertificateEvidence(new string('C', 64), []));
+        Assert.ThrowsException<ArgumentException>(() => new SignerCertificateEvidence(new string('C', 64), ["not-an-oid"]));
+        Assert.IsFalse(source.TryGet("unknown", out _));
     }
 
     [TestMethod]
