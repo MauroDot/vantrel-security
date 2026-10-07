@@ -181,6 +181,49 @@ public sealed class ReleaseAuthenticodeVerifier
 public interface IWinTrustNativeApi { IWinTrustNativeCall BeginFileVerification(string absolutePath, SafeFileHandle fileHandle); }
 public interface IWinTrustNativeCall : IDisposable { int NativeResult { get; } IntPtr StateHandle { get; } string FilePath { get; } }
 public interface IWinTrustProviderEvidenceReader { NativeAuthenticodeEvidence Read(IWinTrustNativeCall call); }
+public interface IAuthenticodeTimestampEvidenceVerifier
+{
+    bool Verify(byte[] timestampToken, byte[] signedData, out string digestAlgorithmOid);
+}
+
+public sealed record AuthenticodeTimestampAttribute(string Oid, IReadOnlyList<byte[]> Values);
+
+public static class AuthenticodeTimestampEvidence
+{
+    // RFC 3161 is represented as this Microsoft Authenticode countersignature attribute by Windows.
+    public const string WindowsRfc3161CounterSignOid = "1.3.6.1.4.1.311.3.3.1"; // szOID_RFC3161_counterSign
+    public const string CmsTimestampTokenOid = "1.2.840.113549.1.9.16.2.14";
+    public const string LegacyCountersignatureOid = "1.2.840.113549.1.9.6";
+    private const string Sha256Oid = "2.16.840.1.101.3.4.2.1";
+    private const string Sha384Oid = "2.16.840.1.101.3.4.2.2";
+    private const string Sha512Oid = "2.16.840.1.101.3.4.2.3";
+
+    public static TimestampPolicyCategory Classify(IReadOnlyList<AuthenticodeTimestampAttribute> attributes,
+        byte[] signedData, IAuthenticodeTimestampEvidenceVerifier verifier)
+    {
+        if (attributes is null || signedData is null || signedData.Length == 0 || verifier is null)
+            return TimestampPolicyCategory.Invalid;
+        var accepted = attributes.Where(attribute => attribute is not null &&
+            (string.Equals(attribute.Oid, WindowsRfc3161CounterSignOid, StringComparison.Ordinal) ||
+             string.Equals(attribute.Oid, CmsTimestampTokenOid, StringComparison.Ordinal))).ToArray();
+        if (accepted.Length == 0)
+            return attributes.Any(attribute => attribute is not null && string.Equals(attribute.Oid, LegacyCountersignatureOid, StringComparison.Ordinal))
+                ? TimestampPolicyCategory.LegacyOnly : TimestampPolicyCategory.Missing;
+        if (accepted.Length != 1 || accepted[0].Values is null || accepted[0].Values.Count != 1 ||
+            accepted[0].Values[0] is null || accepted[0].Values[0].Length == 0)
+            return TimestampPolicyCategory.Invalid;
+        try
+        {
+            if (!verifier.Verify(accepted[0].Values[0], signedData, out var algorithm)) return TimestampPolicyCategory.Invalid;
+            return algorithm is Sha256Oid or Sha384Oid or Sha512Oid ? TimestampPolicyCategory.ValidRfc3161 : TimestampPolicyCategory.UnsupportedAlgorithm;
+        }
+        catch (AuthenticodeProviderUnavailableException) { return TimestampPolicyCategory.Indeterminate; }
+        catch (DllNotFoundException) { return TimestampPolicyCategory.Indeterminate; }
+        catch (EntryPointNotFoundException) { return TimestampPolicyCategory.Indeterminate; }
+        catch (BadImageFormatException) { return TimestampPolicyCategory.Indeterminate; }
+        catch { return TimestampPolicyCategory.Invalid; }
+    }
+}
 
 public sealed class WindowsAuthenticodeNativeVerifier : IAuthenticodeNativeVerifier
 {
@@ -221,9 +264,11 @@ public sealed class WindowsWinTrustProviderEvidenceReader : IWinTrustProviderEvi
     private const string Sha256Oid = "2.16.840.1.101.3.4.2.1";
     private const string Sha384Oid = "2.16.840.1.101.3.4.2.2";
     private const string Sha512Oid = "2.16.840.1.101.3.4.2.3";
-    private const string Rfc3161TimestampOid = "1.2.840.113549.1.9.16.2.14";
-    private const string LegacyCountersignatureOid = "1.2.840.113549.1.9.6";
     private const string NestedSignatureOid = "1.3.6.1.4.1.311.2.4.1";
+    private readonly IAuthenticodeTimestampEvidenceVerifier _timestampVerifier;
+
+    public WindowsWinTrustProviderEvidenceReader(IAuthenticodeTimestampEvidenceVerifier? timestampVerifier = null) =>
+        _timestampVerifier = timestampVerifier ?? new WindowsNativeTimestampEvidenceVerifier();
 
     public NativeAuthenticodeEvidence Read(IWinTrustNativeCall call)
     {
@@ -279,14 +324,11 @@ public sealed class WindowsWinTrustProviderEvidenceReader : IWinTrustProviderEvi
             : NativeDigestAlgorithmCategory.Indeterminate;
     }
 
-    private static TimestampPolicyCategory ReadRfc3161Timestamp(NativeSignedMessage message, IReadOnlyList<NativeAttribute> attributes)
+    private TimestampPolicyCategory ReadRfc3161Timestamp(NativeSignedMessage message, IReadOnlyList<NativeAttribute> attributes)
     {
-        var tokens = attributes.Where(attribute => attribute.Oid == Rfc3161TimestampOid).SelectMany(attribute => attribute.Values).ToArray();
-        if (tokens.Length == 0) return attributes.Any(attribute => attribute.Oid == LegacyCountersignatureOid) ? TimestampPolicyCategory.LegacyOnly : TimestampPolicyCategory.Missing;
-        if (tokens.Length != 1) return TimestampPolicyCategory.Invalid;
-        var signedData = message.ReadBytes(NativeSignedMessage.CmsgEncryptedDigest, 0);
-        if (!NativeTimestampVerifier.Verify(tokens[0], signedData, out var algorithm)) return TimestampPolicyCategory.Invalid;
-        return algorithm is Sha256Oid or Sha384Oid or Sha512Oid ? TimestampPolicyCategory.ValidRfc3161 : TimestampPolicyCategory.UnsupportedAlgorithm;
+        return AuthenticodeTimestampEvidence.Classify(
+            attributes.Select(attribute => new AuthenticodeTimestampAttribute(attribute.Oid, attribute.Values)).ToArray(),
+            message.ReadBytes(NativeSignedMessage.CmsgEncryptedDigest, 0), _timestampVerifier);
     }
 
     private static string GetCertificateSha256(IntPtr certificateContext)
@@ -464,6 +506,12 @@ internal static class NativeTimestampVerifier
     [DllImport("crypt32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CryptVerifyTimeStampSignature(IntPtr timestampContent, uint timestampContentLength, IntPtr data, uint dataLength, IntPtr additionalStore, out IntPtr timestampContext, IntPtr timestampSigner, IntPtr store);
     [DllImport("crypt32.dll")] private static extern void CryptMemFree(IntPtr memory);
+}
+
+internal sealed class WindowsNativeTimestampEvidenceVerifier : IAuthenticodeTimestampEvidenceVerifier
+{
+    public bool Verify(byte[] timestampToken, byte[] signedData, out string digestAlgorithmOid) =>
+        NativeTimestampVerifier.Verify(timestampToken, signedData, out digestAlgorithmOid);
 }
 
 internal static class DerReader
