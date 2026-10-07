@@ -27,3 +27,6 @@ appsettings.*.local.json
 *.pk8
 *.pem
 *.key
+
+# Local, non-secret Azure Artifact Signing endpoint/profile metadata.
+scripts/AzureArtifactSigning.metadata.local.json
