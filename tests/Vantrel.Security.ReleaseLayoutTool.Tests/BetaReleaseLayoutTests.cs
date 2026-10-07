@@ -184,14 +184,14 @@ public sealed class BetaReleaseLayoutTests
             (new(NativeAuthenticodeTrustCategory.AlteredOrNonzero, PrimarySignatureCountPolicyCategory.Indeterminate, NativeDigestAlgorithmCategory.Indeterminate, TimestampPolicyCategory.Indeterminate, null), AuthenticodeVerificationCategory.AlteredOrTrustFailure),
             (new(NativeAuthenticodeTrustCategory.RevocationOrNetworkUncertain, PrimarySignatureCountPolicyCategory.Indeterminate, NativeDigestAlgorithmCategory.Indeterminate, TimestampPolicyCategory.Indeterminate, null), AuthenticodeVerificationCategory.RevocationOrNetworkUncertain),
             (new(NativeAuthenticodeTrustCategory.Unavailable, PrimarySignatureCountPolicyCategory.Indeterminate, NativeDigestAlgorithmCategory.Indeterminate, TimestampPolicyCategory.Indeterminate, null), AuthenticodeVerificationCategory.NativeUnavailable),
-            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.ValidRfc3161, new SignerCertificateEvidence(new string('D', 64))), AuthenticodeVerificationCategory.WrongPublisherPolicy),
-            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.Missing, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.MissingTimestamp),
-            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.LegacyOnly, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.MissingTimestamp),
-            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.Invalid, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.InvalidTimestamp),
-            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.UnsupportedAlgorithm, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.UnsupportedTimestampAlgorithm),
-            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Unsupported, TimestampPolicyCategory.ValidRfc3161, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.UnsupportedDigestAlgorithm),
-            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExtraOrDuplicate, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.ValidRfc3161, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.ExtraOrDuplicatePrimarySignature)
-            ,(new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.None, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.ValidRfc3161, new SignerCertificateEvidence(new string('C', 64))), AuthenticodeVerificationCategory.Indeterminate)
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.ValidRfc3161, Signer(new string('D', 64), AzureArtifactSigningEkuPolicy.CodeSigningEku, AzureArtifactSigningEkuPolicy.AzureArtifactSigningPublicTrustEku)), AuthenticodeVerificationCategory.WrongPublisherPolicy),
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.Missing, Signer(new string('C', 64))), AuthenticodeVerificationCategory.MissingTimestamp),
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.LegacyOnly, Signer(new string('C', 64))), AuthenticodeVerificationCategory.MissingTimestamp),
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.Invalid, Signer(new string('C', 64))), AuthenticodeVerificationCategory.InvalidTimestamp),
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.UnsupportedAlgorithm, Signer(new string('C', 64))), AuthenticodeVerificationCategory.UnsupportedTimestampAlgorithm),
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Unsupported, TimestampPolicyCategory.ValidRfc3161, Signer(new string('C', 64))), AuthenticodeVerificationCategory.UnsupportedDigestAlgorithm),
+            (new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExtraOrDuplicate, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.ValidRfc3161, Signer(new string('C', 64))), AuthenticodeVerificationCategory.ExtraOrDuplicatePrimarySignature)
+            ,(new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.None, NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.ValidRfc3161, Signer(new string('C', 64))), AuthenticodeVerificationCategory.Indeterminate)
         };
 
         foreach (var testCase in cases)
@@ -219,6 +219,20 @@ public sealed class BetaReleaseLayoutTests
         Assert.AreEqual(AuthenticodeVerificationCategory.UnconfiguredProfile, unconfigured.Verify("service/Vantrel.Security.Service.exe", Path.Combine(scope.Root, "service", "Vantrel.Security.Service.exe"), "vantrel-production").Category);
         scope.AssertAuthenticodeRejected(unconfigured, "vantrel-production");
         Assert.AreEqual(0, native.Paths.Count);
+    }
+
+    [TestMethod]
+    public void Azure_artifact_signing_policy_requires_exact_ekus_and_allows_leaf_rotation()
+    {
+        var policy = new AzureArtifactSigningEkuPolicy(AzureArtifactSigningEkuPolicy.VantrelCertificateProfileEku);
+
+        Assert.IsTrue(policy.Matches(Signer(new string('C', 64))));
+        Assert.IsTrue(policy.Matches(Signer(new string('D', 64))));
+        Assert.IsFalse(policy.Matches(Signer(new string('C', 64), AzureArtifactSigningEkuPolicy.CodeSigningEku, AzureArtifactSigningEkuPolicy.AzureArtifactSigningPublicTrustEku)));
+        Assert.IsFalse(policy.Matches(Signer(new string('C', 64), AzureArtifactSigningEkuPolicy.CodeSigningEku, AzureArtifactSigningEkuPolicy.VantrelCertificateProfileEku)));
+        Assert.IsFalse(policy.Matches(Signer(new string('C', 64), AzureArtifactSigningEkuPolicy.AzureArtifactSigningPublicTrustEku, AzureArtifactSigningEkuPolicy.VantrelCertificateProfileEku)));
+        Assert.IsFalse(policy.Matches(Signer(new string('C', 64), AzureArtifactSigningEkuPolicy.CodeSigningEku, AzureArtifactSigningEkuPolicy.AzureArtifactSigningPublicTrustEku, "1.3.6.1.4.1.311.97.790899309.69055806.5460467.69741028")));
+        Assert.ThrowsException<ArgumentException>(() => new SignerCertificateEvidence(new string('C', 64), ["not-an-oid"]));
     }
 
     [TestMethod]
@@ -406,9 +420,17 @@ public sealed class BetaReleaseLayoutTests
 
     private static bool IsPrivilegeNotHeld(Exception error) => error.HResult == PrivilegeNotHeldHResult;
 
+    private static SignerCertificateEvidence Signer(string certificateSha256, params string[] usages) =>
+        new(certificateSha256, usages.Length == 0 ?
+        [
+            AzureArtifactSigningEkuPolicy.CodeSigningEku,
+            AzureArtifactSigningEkuPolicy.AzureArtifactSigningPublicTrustEku,
+            AzureArtifactSigningEkuPolicy.VantrelCertificateProfileEku
+        ] : usages);
+
     private static NativeAuthenticodeEvidence SuccessEvidence() => new(NativeAuthenticodeTrustCategory.Success,
         PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256,
-        TimestampPolicyCategory.ValidRfc3161, new SignerCertificateEvidence(new string('C', 64)));
+        TimestampPolicyCategory.ValidRfc3161, Signer(new string('C', 64)));
 
     private static ReleaseAuthenticodeVerifier CreateAuthenticator(IAuthenticodeNativeVerifier native) =>
         new(new TestProfileSource(), native);
@@ -694,14 +716,14 @@ public sealed class BetaReleaseLayoutTests
 
         public NativeAuthenticodeEvidence Verify(string absolutePath, SafeFileHandle fileHandle) =>
             new(NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne,
-                NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.ValidRfc3161, new SignerCertificateEvidence(new string('C', 64)));
+                NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.ValidRfc3161, Signer(new string('C', 64)));
     }
 
     private sealed class TestProfileSource : IReleaseSigningProfileSource
     {
         public bool TryGet(string alias, out ReleaseSigningProfile profile)
         {
-            profile = new ReleaseSigningProfile(TestAuthenticodeVerifier.ProfileAlias, "test-publisher-policy", new ExactCertificateSha256SigningPolicy(new string('C', 64)));
+            profile = new ReleaseSigningProfile(TestAuthenticodeVerifier.ProfileAlias, "test-publisher-policy", new AzureArtifactSigningEkuPolicy(AzureArtifactSigningEkuPolicy.VantrelCertificateProfileEku));
             return string.Equals(alias, TestAuthenticodeVerifier.ProfileAlias, StringComparison.Ordinal);
         }
     }

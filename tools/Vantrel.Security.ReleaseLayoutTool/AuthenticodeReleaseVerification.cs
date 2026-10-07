@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using Microsoft.Win32.SafeHandles;
 
 namespace Vantrel.Security.ReleaseLayoutTool;
@@ -22,20 +23,63 @@ public static class ReleaseSigningContract
 }
 
 // This data stays inside the verifier and is never emitted in a release record.
-public sealed record SignerCertificateEvidence(string CertificateSha256);
+public sealed class SignerCertificateEvidence
+{
+    public SignerCertificateEvidence(string certificateSha256, IEnumerable<string> enhancedKeyUsageOids)
+    {
+        if (!IsSha256(certificateSha256)) throw new ArgumentException("Certificate identity is unavailable.", nameof(certificateSha256));
+        if (enhancedKeyUsageOids is null) throw new ArgumentNullException(nameof(enhancedKeyUsageOids));
+        var values = enhancedKeyUsageOids.ToArray();
+        if (values.Length == 0 || values.Any(value => !IsCanonicalOid(value))) throw new ArgumentException("Certificate usage evidence is unavailable.", nameof(enhancedKeyUsageOids));
+        CertificateSha256 = certificateSha256;
+        EnhancedKeyUsageOids = Array.AsReadOnly(values);
+    }
+
+    // The leaf hash is audit/test evidence only. It is not a release trust anchor.
+    public string CertificateSha256 { get; }
+    public IReadOnlyList<string> EnhancedKeyUsageOids { get; }
+
+    internal static bool IsSha256(string? value) => value is { Length: 64 } && value.All(item => item is >= '0' and <= '9' or >= 'A' and <= 'F');
+
+    internal static bool IsCanonicalOid(string? value)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length > 128) return false;
+        var values = value.Split('.');
+        if (values.Length < 2 || values.Any(item => item.Length == 0 || (item.Length > 1 && item[0] == '0') || item.Any(character => character is < '0' or > '9'))) return false;
+        if (values[0] is not ("0" or "1" or "2")) return false;
+        if (values[0] is "0" or "1" && (!ulong.TryParse(values[1], out var second) || second > 39)) return false;
+        return true;
+    }
+}
 
 public interface IReleaseSigningPolicy { bool Matches(SignerCertificateEvidence signer); }
 
-public sealed class ExactCertificateSha256SigningPolicy : IReleaseSigningPolicy
+public sealed class AzureArtifactSigningEkuPolicy : IReleaseSigningPolicy
 {
-    private readonly string _certificateSha256;
-    public ExactCertificateSha256SigningPolicy(string certificateSha256)
+    public const string CodeSigningEku = "1.3.6.1.5.5.7.3.3";
+    public const string AzureArtifactSigningPublicTrustEku = "1.3.6.1.4.1.311.97.1.0";
+    public const string VantrelCertificateProfileEku = "1.3.6.1.4.1.311.97.790899309.69055806.5460467.69741027";
+    private const string AzureArtifactSigningEkuPrefix = "1.3.6.1.4.1.311.97.";
+    private readonly string _profileEku;
+
+    public AzureArtifactSigningEkuPolicy(string profileEku)
     {
-        if (!IsSha256(certificateSha256)) throw new ArgumentException("Certificate identity is unavailable.", nameof(certificateSha256));
-        _certificateSha256 = certificateSha256;
+        if (!string.Equals(profileEku, VantrelCertificateProfileEku, StringComparison.Ordinal)) throw new ArgumentException("Certificate profile is unavailable.", nameof(profileEku));
+        _profileEku = profileEku;
     }
-    public bool Matches(SignerCertificateEvidence signer) => signer is not null && string.Equals(_certificateSha256, signer.CertificateSha256, StringComparison.Ordinal);
-    private static bool IsSha256(string? value) => value is { Length: 64 } && value.All(item => item is >= '0' and <= '9' or >= 'A' and <= 'F');
+
+    public bool Matches(SignerCertificateEvidence signer)
+    {
+        if (signer is null || !SignerCertificateEvidence.IsSha256(signer.CertificateSha256)) return false;
+        var usages = signer.EnhancedKeyUsageOids;
+        if (usages is null || usages.Count == 0 || usages.Any(usage => !SignerCertificateEvidence.IsCanonicalOid(usage))) return false;
+        if (!usages.Contains(CodeSigningEku, StringComparer.Ordinal) ||
+            !usages.Contains(AzureArtifactSigningPublicTrustEku, StringComparer.Ordinal) ||
+            !usages.Contains(_profileEku, StringComparer.Ordinal)) return false;
+        return !usages.Any(usage => usage.StartsWith(AzureArtifactSigningEkuPrefix, StringComparison.Ordinal) &&
+            !string.Equals(usage, AzureArtifactSigningPublicTrustEku, StringComparison.Ordinal) &&
+            !string.Equals(usage, _profileEku, StringComparison.Ordinal));
+    }
 }
 
 public sealed record ReleaseSigningProfile(string Alias, string PolicyId, IReleaseSigningPolicy? PublisherPolicy)
@@ -49,8 +93,8 @@ public sealed class SourceOwnedReleaseSigningProfileSource : IReleaseSigningProf
 {
     private static readonly IReadOnlyList<ReleaseSigningProfile> Profiles = Array.AsReadOnly(new ReleaseSigningProfile[]
     {
-        // No publisher identity is provisioned in source. This policy cannot approve a release.
-        new("vantrel-production", "vantrel-publisher-unprovisioned", null)
+        // No Azure Artifact Signing profile is provisioned in source. This policy cannot approve a release.
+        new("vantrel-production", "vantrel-azure-artifact-signing-unprovisioned", null)
     });
     public bool TryGet(string alias, out ReleaseSigningProfile profile)
     {
@@ -171,7 +215,7 @@ public sealed class WindowsAuthenticodeNativeVerifier : IAuthenticodeNativeVerif
 
 public sealed class AuthenticodeProviderUnavailableException : Exception { public AuthenticodeProviderUnavailableException() { } }
 // The provider-state helpers are resolved dynamically as required by their WinTrust contract.
-// The provider certificate is reduced immediately to an internal SHA-256 identity.
+// The provider certificate is reduced immediately to internal leaf-hash and EKU evidence.
 public sealed class WindowsWinTrustProviderEvidenceReader : IWinTrustProviderEvidenceReader
 {
     private const string Sha256Oid = "2.16.840.1.101.3.4.2.1";
@@ -217,7 +261,7 @@ public sealed class WindowsWinTrustProviderEvidenceReader : IWinTrustProviderEvi
             if (certificate == IntPtr.Zero) throw new AuthenticodeProviderUnavailableException();
             var providerCertificate = Marshal.PtrToStructure<CryptProviderCert>(certificate);
             if (providerCertificate.CertificateContext == IntPtr.Zero) throw new AuthenticodeProviderUnavailableException();
-            return new SignerCertificateEvidence(GetCertificateSha256(providerCertificate.CertificateContext));
+            return GetCertificateEvidence(providerCertificate.CertificateContext);
         }
         catch (AuthenticodeProviderUnavailableException) { throw; }
         catch (DllNotFoundException) { throw new AuthenticodeProviderUnavailableException(); }
@@ -250,6 +294,17 @@ public sealed class WindowsWinTrustProviderEvidenceReader : IWinTrustProviderEvi
         uint size = 32; var value = new byte[size];
         if (!CertGetCertificateContextProperty(certificateContext, 107, value, ref size) || size != value.Length) throw new AuthenticodeProviderUnavailableException();
         return Convert.ToHexString(value);
+    }
+
+    private static SignerCertificateEvidence GetCertificateEvidence(IntPtr certificateContext)
+    {
+        var certificateHash = GetCertificateSha256(certificateContext);
+        using var certificate = new X509Certificate2(certificateContext);
+        var extensions = certificate.Extensions.OfType<X509EnhancedKeyUsageExtension>().ToArray();
+        if (extensions.Length != 1) throw new AuthenticodeProviderUnavailableException();
+        var usages = extensions[0].EnhancedKeyUsages.Cast<Oid>().Select(usage => usage.Value).ToArray();
+        try { return new SignerCertificateEvidence(certificateHash, usages!); }
+        catch (ArgumentException) { throw new AuthenticodeProviderUnavailableException(); }
     }
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)] private delegate IntPtr ProviderDataFromStateDelegate(IntPtr state);
