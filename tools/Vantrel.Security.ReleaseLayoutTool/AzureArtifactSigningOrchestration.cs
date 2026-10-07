@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -8,7 +9,7 @@ namespace Vantrel.Security.ReleaseLayoutTool;
 
 /// <summary>Strict, non-secret metadata for the externally supplied Artifact Signing dlib.</summary>
 public sealed record AzureArtifactSigningMetadata(string Endpoint, string CodeSigningAccountName,
-    string CertificateProfileName, string? CorrelationId);
+    string CertificateProfileName, string? CorrelationId, bool InteractiveBrowserOnly = false);
 
 public static class AzureArtifactSigningMetadataCodec
 {
@@ -19,12 +20,20 @@ public static class AzureArtifactSigningMetadataCodec
     public const string CertificateProfileName = "vantrelpublic";
     private static readonly UTF8Encoding Utf8 = new(false, true);
     private static readonly string[] RequiredNames = ["Endpoint", "CodeSigningAccountName", "CertificateProfileName"];
+    private static readonly string[] InteractiveBrowserOnlyExcludedCredentials =
+    [
+        "EnvironmentCredential", "ManagedIdentityCredential", "WorkloadIdentityCredential", "SharedTokenCacheCredential",
+        "VisualStudioCredential", "VisualStudioCodeCredential", "AzureCliCredential", "AzurePowerShellCredential",
+        "AzureDeveloperCliCredential"
+    ];
 
     public static byte[] CreateCanonical(AzureArtifactSigningMetadata metadata)
     {
         Validate(metadata);
         var correlation = metadata.CorrelationId is null ? string.Empty : $",\"CorrelationId\":\"{metadata.CorrelationId}\"";
-        return Utf8.GetBytes($"{{\"Endpoint\":\"{Endpoint}\",\"CodeSigningAccountName\":\"{AccountName}\",\"CertificateProfileName\":\"{CertificateProfileName}\"{correlation}}}\n");
+        var credentials = metadata.InteractiveBrowserOnly
+            ? $",\"ExcludeCredentials\":[{string.Join(',', InteractiveBrowserOnlyExcludedCredentials.Select(value => $"\"{value}\""))}]" : string.Empty;
+        return Utf8.GetBytes($"{{\"Endpoint\":\"{Endpoint}\",\"CodeSigningAccountName\":\"{AccountName}\",\"CertificateProfileName\":\"{CertificateProfileName}\"{correlation}{credentials}}}\n");
     }
 
     public static bool TryParse(ReadOnlySpan<byte> bytes, out AzureArtifactSigningMetadata? metadata)
@@ -36,13 +45,19 @@ public static class AzureArtifactSigningMetadataCodec
             using var document = JsonDocument.Parse(bytes.ToArray());
             if (document.RootElement.ValueKind != JsonValueKind.Object) return false;
             var properties = document.RootElement.EnumerateObject().ToArray();
-            if (properties.Length is < 3 or > 4) return false;
-            var expected = properties.Length == 3 ? RequiredNames : RequiredNames.Append("CorrelationId").ToArray();
+            if (properties.Length is < 3 or > 5) return false;
+            var hasCorrelation = properties.Any(item => item.NameEquals("CorrelationId"));
+            var hasCredentials = properties.Any(item => item.NameEquals("ExcludeCredentials"));
+            var expected = RequiredNames
+                .Concat(hasCorrelation ? ["CorrelationId"] : [])
+                .Concat(hasCredentials ? ["ExcludeCredentials"] : []).ToArray();
             if (!properties.Select(item => item.Name).SequenceEqual(expected, StringComparer.Ordinal)) return false;
-            if (properties.Any(item => item.Value.ValueKind != JsonValueKind.String)) return false;
-            var values = properties.Select(item => item.Value.GetString()).ToArray();
-            var correlation = properties.Length == 4 ? values[3] : null;
-            var candidate = new AzureArtifactSigningMetadata(values[0]!, values[1]!, values[2]!, correlation);
+            if (properties.Take(3).Any(item => item.Value.ValueKind != JsonValueKind.String)) return false;
+            var correlation = hasCorrelation ? properties.Single(item => item.NameEquals("CorrelationId")).Value.GetString() : null;
+            if (hasCorrelation && correlation is null) return false;
+            var browserOnly = hasCredentials && IsInteractiveBrowserOnly(properties.Single(item => item.NameEquals("ExcludeCredentials")).Value);
+            if (hasCredentials && !browserOnly) return false;
+            var candidate = new AzureArtifactSigningMetadata(properties[0].Value.GetString()!, properties[1].Value.GetString()!, properties[2].Value.GetString()!, correlation, browserOnly);
             Validate(candidate);
             if (!bytes.SequenceEqual(CreateCanonical(candidate))) return false;
             metadata = candidate;
@@ -90,6 +105,10 @@ public static class AzureArtifactSigningMetadataCodec
             throw new ArgumentException("Signing metadata is unavailable.", nameof(metadata));
     }
 
+    private static bool IsInteractiveBrowserOnly(JsonElement value) => value.ValueKind == JsonValueKind.Array &&
+        value.EnumerateArray().All(item => item.ValueKind == JsonValueKind.String) &&
+        value.EnumerateArray().Select(item => item.GetString()).SequenceEqual(InteractiveBrowserOnlyExcludedCredentials, StringComparer.Ordinal);
+
     private static bool HasBom(ReadOnlySpan<byte> bytes) => bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
     private static bool HasNonAscii(ReadOnlySpan<byte> bytes) { foreach (var value in bytes) if (value > 0x7f) return true; return false; }
     private static bool IsReparse(string path) => (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
@@ -103,15 +122,33 @@ public interface IAzureArtifactSigningProcessRunner
     int Run(string executablePath, IReadOnlyList<string> arguments);
 }
 
+/// <summary>The sole production process boundary for explicit SignTool invocation.</summary>
+internal sealed class SignToolProcessRunner : IAzureArtifactSigningProcessRunner
+{
+    public int Run(string executablePath, IReadOnlyList<string> arguments)
+    {
+        var start = new ProcessStartInfo(executablePath) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new IOException("Azure Artifact Signing preflight failed.");
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        process.WaitForExit();
+        Task.WaitAll(output, error);
+        return process.ExitCode;
+    }
+}
+
 public sealed class AzureArtifactSigningOrchestrator
 {
     public const string TimestampEndpoint = "http://timestamp.acs.microsoft.com";
     private const string Failure = "Azure Artifact Signing preflight failed.";
     private readonly IAzureArtifactSigningProcessRunner _runner;
+    private readonly IReleaseAuthenticodeVerification _authenticode;
 
-    public AzureArtifactSigningOrchestrator(IAzureArtifactSigningProcessRunner runner)
+    public AzureArtifactSigningOrchestrator(IAzureArtifactSigningProcessRunner runner, IReleaseAuthenticodeVerification? authenticode = null)
     {
         _runner = runner ?? throw new ArgumentNullException(nameof(runner));
+        _authenticode = authenticode ?? new ReleaseAuthenticodeVerifier();
     }
 
     public void SignPreparedLayout(string releaseLayoutRoot, AzureArtifactSigningToolPaths tools)
@@ -138,6 +175,9 @@ public sealed class AzureArtifactSigningOrchestrator
             catch { throw new IOException(Failure); }
             if (exitCode != 0) throw new IOException(Failure);
         }
+        foreach (var artifact in artifacts)
+            if (_authenticode.Verify(artifact.RelativePath, artifact.Path, "vantrel-production").Category != AuthenticodeVerificationCategory.Valid)
+                throw new IOException(Failure);
     }
 
     private static string ValidatePreparedLayout(string releaseLayoutRoot)

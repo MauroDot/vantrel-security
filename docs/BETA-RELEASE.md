@@ -1,6 +1,6 @@
 # Beta release layout foundation
 
-`New-BetaReleaseLayout.ps1` is a build-time, two-phase release-layout tool. It does not install software, control a service, sign code, open a private key, contact a signing service, or create an installer.
+`New-BetaReleaseLayout.ps1` is a build-time, two-phase release-layout tool. It does not install software, control a service, open a private key, contact a signing service, or create an installer. Explicit PE signing, when separately invoked through `ReleaseLayoutTool`, remains a later gated operation.
 
 The beta gate requires the exact SDK in `global.json` and a clean immutable checkout. It rejects tracked, untracked, and ignored checkout content before it restores, builds, or publishes. It runs `dotnet restore --locked-mode` against the committed package lock files; ordinary development restores remain unlocked.
 
@@ -8,9 +8,11 @@ The beta gate requires the exact SDK in `global.json` and a clean immutable chec
 
 `Prepare` publishes raw Service output into temporary release-root staging, projects only the seven canonical Service components into `service`, and publishes framework-dependent `win-x64` Desktop and OfflineUpdateTool outputs into fixed `desktop` and `offline-update-tool` directories below an empty caller-supplied root. It writes a canonical descriptor and copies release notes as `release-notes.md`.
 
-After `Prepare`, an external signing system signs only the documented Vantrel-owned PE allowlist using a non-secret signing-profile alias. The repository has no signing backend, certificate, private key, thumbprint, or token. Authenticode signing therefore occurs outside this repository. The four signed Vantrel Service PE files are then covered by the existing trusted manifest with the descriptor release version; separately signed release metadata follows with the same display version.
+After `Prepare`, the explicitly invoked release-tool signing command signs only the documented Vantrel-owned PE allowlist using external Azure Artifact Signing infrastructure and ignored local metadata. The repository contains no certificate, private key, thumbprint, or token. The four signed Vantrel Service PE files are then covered by the existing trusted manifest with the descriptor release version; separately signed release metadata follows with the same display version.
 
-Task 066 adds only a testable Azure Artifact Signing preflight/orchestration boundary. Its checked-in metadata template contains the fixed endpoint, account, and certificate-profile identifiers; the corresponding local metadata file is ignored and contains no credential. The boundary has no real process runner, does not sign files, and invokes neither `Record` nor production-policy provisioning. A later explicitly approved task must supply the external SignTool/dlib integration, authenticate outside the repository, sign the exact thirteen Vantrel-owned PEs sequentially with SHA-256 and RFC 3161 timestamping, and then run the existing post-signature gate.
+`sign-authenticode-layout --output-root <prepared-layout-root> --signtool <explicit-x64-signtool.exe> --dlib <explicit-Azure.CodeSigning.Dlib.dll> --metadata <ignored-local-metadata.json>` is the only production composition root for PE signing. It accepts only a prepared, unrecorded layout, signs the exact thirteen Vantrel-owned PEs in canonical order with SHA-256 and RFC 3161 timestamping, then runs the configured `vantrel-production` Authenticode gate. It uses no wildcard or directory signing and never writes a release record. The checked-in metadata template and ignored local file contain only fixed public endpoint/account/profile values and an optional fixed interactive-browser-only `ExcludeCredentials` set; no arbitrary credential chain configuration is accepted.
+
+The required order is `Prepare`, explicit PE signing, external trusted-manifest signing, external release-metadata signing, then `Record`. PE signing alone is not a completed release.
 
 `inspect-authenticode --file <explicit-pe-path>` is a manual, read-only validation aid for one local PE. It applies ordinary Windows Authenticode validation and the fixed Vantrel Artifact Signing EKU requirements, then emits only sanitized categories. It neither approves a release nor writes a record, and it does not configure the production signing profile.
 

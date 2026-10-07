@@ -41,7 +41,7 @@ public sealed class AzureArtifactSigningOrchestrationTests
         using var scope = new PreparedLayoutScope();
         var runner = new CapturingRunner();
 
-        new AzureArtifactSigningOrchestrator(runner).SignPreparedLayout(scope.Root, scope.Tools);
+        CreateOrchestrator(runner).SignPreparedLayout(scope.Root, scope.Tools);
 
         CollectionAssert.AreEqual(ReleaseSigningContract.VantrelOwnedPeArtifacts.Select(item => item.RelativePath).ToArray(),
             runner.Calls.Select(item => Path.GetRelativePath(scope.Root, item.Arguments[^1]).Replace('\\', '/')).ToArray());
@@ -57,7 +57,7 @@ public sealed class AzureArtifactSigningOrchestrationTests
         {
             File.Delete(Path.Combine(missing.Root, "desktop", "Vantrel.Security.Desktop.dll"));
             var runner = new CapturingRunner();
-            Assert.ThrowsException<IOException>(() => new AzureArtifactSigningOrchestrator(runner).SignPreparedLayout(missing.Root, missing.Tools));
+            Assert.ThrowsException<IOException>(() => CreateOrchestrator(runner).SignPreparedLayout(missing.Root, missing.Tools));
             Assert.AreEqual(0, runner.Calls.Count);
         }
 
@@ -65,7 +65,7 @@ public sealed class AzureArtifactSigningOrchestrationTests
         {
             var later = Path.Combine(changed.Root, "service", "Vantrel.Security.Service.dll");
             var runner = new CapturingRunner(call => { if (call == 1) File.AppendAllText(later, "changed"); return 0; });
-            Assert.ThrowsException<IOException>(() => new AzureArtifactSigningOrchestrator(runner).SignPreparedLayout(changed.Root, changed.Tools));
+            Assert.ThrowsException<IOException>(() => CreateOrchestrator(runner).SignPreparedLayout(changed.Root, changed.Tools));
             Assert.AreEqual(1, runner.Calls.Count);
             Assert.IsFalse(File.Exists(Path.Combine(changed.Root, BetaReleaseLayoutValidator.RecordFileName)));
         }
@@ -77,7 +77,7 @@ public sealed class AzureArtifactSigningOrchestrationTests
         using var scope = new PreparedLayoutScope();
         var runner = new CapturingRunner(call => call == 3 ? 1 : 0);
 
-        Assert.ThrowsException<IOException>(() => new AzureArtifactSigningOrchestrator(runner).SignPreparedLayout(scope.Root, scope.Tools));
+        Assert.ThrowsException<IOException>(() => CreateOrchestrator(runner).SignPreparedLayout(scope.Root, scope.Tools));
 
         Assert.AreEqual(3, runner.Calls.Count);
         Assert.IsFalse(File.Exists(Path.Combine(scope.Root, BetaReleaseLayoutValidator.RecordFileName)));
@@ -90,7 +90,7 @@ public sealed class AzureArtifactSigningOrchestrationTests
         {
             File.WriteAllText(Path.Combine(scope.Root, "desktop", "unapproved.exe"), "not-a-target");
             var runner = new CapturingRunner();
-            new AzureArtifactSigningOrchestrator(runner).SignPreparedLayout(scope.Root, scope.Tools);
+            CreateOrchestrator(runner).SignPreparedLayout(scope.Root, scope.Tools);
             Assert.AreEqual(ReleaseSigningContract.VantrelOwnedPeArtifacts.Count, runner.Calls.Count);
         }
 
@@ -102,7 +102,7 @@ public sealed class AzureArtifactSigningOrchestrationTests
         try { File.CreateSymbolicLink(artifact, target); }
         catch (Exception error) when (error.HResult == unchecked((int)0x80070522)) { Assert.Inconclusive("Symbolic-link privilege unavailable."); return; }
         var blocked = new CapturingRunner();
-        Assert.ThrowsException<IOException>(() => new AzureArtifactSigningOrchestrator(blocked).SignPreparedLayout(reparse.Root, reparse.Tools));
+        Assert.ThrowsException<IOException>(() => CreateOrchestrator(blocked).SignPreparedLayout(reparse.Root, reparse.Tools));
         Assert.AreEqual(0, blocked.Calls.Count);
     }
 
@@ -117,6 +117,64 @@ public sealed class AzureArtifactSigningOrchestrationTests
         StringAssert.Contains(ignore, "scripts/" + AzureArtifactSigningMetadataCodec.LocalMetadataFileName);
     }
 
+    [TestMethod]
+    public void Interactive_browser_only_metadata_requires_the_exact_documented_exclusion_list()
+    {
+        var metadata = new AzureArtifactSigningMetadata(AzureArtifactSigningMetadataCodec.Endpoint,
+            AzureArtifactSigningMetadataCodec.AccountName, AzureArtifactSigningMetadataCodec.CertificateProfileName, null, true);
+        var canonical = AzureArtifactSigningMetadataCodec.CreateCanonical(metadata);
+        Assert.IsTrue(AzureArtifactSigningMetadataCodec.TryParse(canonical, out var parsed));
+        Assert.IsTrue(parsed!.InteractiveBrowserOnly);
+
+        var text = System.Text.Encoding.UTF8.GetString(canonical);
+        foreach (var altered in new[]
+        {
+            text.Replace("\"AzureCliCredential\",", string.Empty, StringComparison.Ordinal),
+            text.Replace("\"EnvironmentCredential\",", "\"UnexpectedCredential\",", StringComparison.Ordinal),
+            text.Replace("\"AzureDeveloperCliCredential\"", "\"InteractiveBrowserCredential\"", StringComparison.Ordinal),
+            text.Replace("\"EnvironmentCredential\",\"ManagedIdentityCredential\"", "\"ManagedIdentityCredential\",\"EnvironmentCredential\"", StringComparison.Ordinal)
+        })
+            Assert.IsFalse(AzureArtifactSigningMetadataCodec.TryParse(System.Text.Encoding.UTF8.GetBytes(altered), out _));
+    }
+
+    [TestMethod]
+    public void Explicit_sign_command_rejects_relative_duplicate_unknown_and_existing_record_inputs_without_invoking_signer()
+    {
+        using var scope = new PreparedLayoutScope();
+        var runner = new CapturingRunner();
+        var output = new StringWriter();
+        var absolute = new[] { "sign-authenticode-layout", "--output-root", scope.Root, "--signtool", scope.Tools.SignToolPath,
+            "--dlib", scope.Tools.DlibPath, "--metadata", scope.Tools.MetadataPath };
+        ReleaseLayoutToolCommand.Execute(absolute, runner, output, new CapturingAuthenticodeVerifier(AuthenticodeVerificationCategory.Valid));
+        Assert.AreEqual(ReleaseSigningContract.VantrelOwnedPeArtifacts.Count, runner.Calls.Count);
+        StringAssert.Contains(output.ToString(), "Externally sign");
+
+        foreach (var invalid in new[]
+        {
+            new[] { "sign-authenticode-layout", "--output-root", ".", "--signtool", scope.Tools.SignToolPath, "--dlib", scope.Tools.DlibPath, "--metadata", scope.Tools.MetadataPath },
+            absolute.Append("--unknown").Append("value").ToArray(),
+            absolute.Append("--metadata").Append(scope.Tools.MetadataPath).ToArray()
+        })
+            Assert.ThrowsException<ArgumentException>(() => ReleaseLayoutToolCommand.Execute(invalid, new CapturingRunner(), TextWriter.Null));
+
+        File.WriteAllText(Path.Combine(scope.Root, BetaReleaseLayoutValidator.RecordFileName), "record");
+        Assert.ThrowsException<IOException>(() => ReleaseLayoutToolCommand.Execute(absolute, new CapturingRunner(), TextWriter.Null));
+    }
+
+    [TestMethod]
+    public void Post_sign_policy_failure_blocks_completion_without_record()
+    {
+        using var scope = new PreparedLayoutScope();
+        var runner = new CapturingRunner();
+        var verifier = new CapturingAuthenticodeVerifier(AuthenticodeVerificationCategory.WrongPublisherPolicy);
+        Assert.ThrowsException<IOException>(() => new AzureArtifactSigningOrchestrator(runner, verifier).SignPreparedLayout(scope.Root, scope.Tools));
+        Assert.AreEqual(ReleaseSigningContract.VantrelOwnedPeArtifacts.Count, runner.Calls.Count);
+        Assert.AreEqual(1, verifier.Calls.Count);
+        Assert.IsFalse(File.Exists(Path.Combine(scope.Root, BetaReleaseLayoutValidator.RecordFileName)));
+    }
+
+    private static AzureArtifactSigningOrchestrator CreateOrchestrator(IAzureArtifactSigningProcessRunner runner) =>
+        new(runner, new CapturingAuthenticodeVerifier(AuthenticodeVerificationCategory.Valid));
     private static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
@@ -134,6 +192,16 @@ public sealed class AzureArtifactSigningOrchestrationTests
         }
     }
 
+    private sealed class CapturingAuthenticodeVerifier(AuthenticodeVerificationCategory category) : IReleaseAuthenticodeVerification
+    {
+        internal List<string> Calls { get; } = [];
+        public AuthenticodeReleaseEvidence Verify(string relativePath, string absolutePath, string profileAlias)
+        {
+            Calls.Add(relativePath);
+            return new(relativePath, category, "vantrel-azure-artifact-signing-durable-eku-v1",
+                PrimarySignatureCountPolicyCategory.ExactlyOne, TimestampPolicyCategory.ValidRfc3161);
+        }
+    }
     private sealed class PreparedLayoutScope : IDisposable
     {
         internal string Root { get; } = Path.Combine(Path.GetTempPath(), "vantrel-azure-signing-" + Guid.NewGuid().ToString("N"));

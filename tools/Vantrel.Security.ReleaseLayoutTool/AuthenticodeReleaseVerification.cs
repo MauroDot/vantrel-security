@@ -123,8 +123,9 @@ public sealed record AuthenticodeReleaseEvidence(string RelativePath, Authentico
     string SignerPolicyId, PrimarySignatureCountPolicyCategory PrimarySignatureCount, TimestampPolicyCategory Timestamp);
 
 public interface IAuthenticodeNativeVerifier { NativeAuthenticodeEvidence Verify(string absolutePath, SafeFileHandle fileHandle); }
+public interface IReleaseAuthenticodeVerification { AuthenticodeReleaseEvidence Verify(string relativePath, string absolutePath, string profileAlias); }
 
-public sealed class ReleaseAuthenticodeVerifier
+public sealed class ReleaseAuthenticodeVerifier : IReleaseAuthenticodeVerification
 {
     private readonly IReleaseSigningProfileSource _profiles;
     private readonly IAuthenticodeNativeVerifier _native;
