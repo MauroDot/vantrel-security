@@ -135,6 +135,7 @@
           "Vantrel.Security.ManifestTool": "[0.1.0, )"
         }
       }
-    }
+    },
+    "net10.0-windows7.0/win-x64": {}
   }
 }
