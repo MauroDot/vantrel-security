@@ -98,7 +98,7 @@ public sealed class InstallerInputValidator
         RequireExactService(records.Keys, observed);
         RequireDirectoryCorrespondence(BetaReleaseLayoutValidator.DesktopDirectoryName, records.Keys, observed, "Vantrel.Security.Desktop.exe");
         RequireDirectoryCorrespondence(BetaReleaseLayoutValidator.OfflineUpdateToolDirectoryName, records.Keys, observed, "Vantrel.Security.OfflineUpdateTool.exe");
-        var artifacts = observed.Where(artifact => IsInstallArtifact(artifact.RelativePath)).Select(artifact => new InstallerPlanArtifact(
+        var artifacts = observed.Where(artifact => IsInstallArtifact(artifact.RelativePath) && !IsRecordedNonInstallerResidue(artifact.RelativePath)).Select(artifact => new InstallerPlanArtifact(
             artifact.RelativePath, DestinationFor(artifact.RelativePath), artifact.Sha256)).ToArray();
         if (artifacts.Length == 0) throw new IOException("Installer input contains no distributable artifacts.");
         return new(record.Descriptor, msiVersion.ToString(), Array.AsReadOnly(artifacts), InitialInstallContract.Model);
@@ -143,7 +143,7 @@ public sealed class InstallerInputValidator
                     if (Directory.Exists(entry)) { pending.Push(entry); continue; }
                     if (!File.Exists(entry)) throw new IOException("Release artifact is unavailable.");
                     var relative = directory + "/" + Path.GetRelativePath(directoryRoot, entry).Replace('\\', '/');
-                    if (!IsAllowedArtifactPath(relative) || !seen.Add(relative)) throw new IOException("Release artifact is not eligible for installation.");
+                    if ((!IsAllowedArtifactPath(relative) && !IsRecordedNonInstallerResidue(relative)) || !seen.Add(relative)) throw new IOException("Release artifact is not eligible for installation.");
                     yield return new(relative, HashFile(entry));
                 }
             }
@@ -184,12 +184,30 @@ public sealed class InstallerInputValidator
 
     internal static bool IsAllowedArtifactPath(string path)
     {
-        if (string.IsNullOrWhiteSpace(path) || path.Length > 512 || path.Contains(':') || path.Contains('\\') || path.Contains("//", StringComparison.Ordinal) || path.Split('/').Any(segment => segment is "" or "." or ".." || ForbiddenSegments.Contains(segment))) return false;
+        if (!IsSafeArtifactPathSyntax(path)) return false;
         var fileName = Path.GetFileName(path);
         if (SecretExtensions.Contains(Path.GetExtension(fileName)) || ForbiddenExtensions.Contains(Path.GetExtension(fileName)) ||
             fileName.Equals("packages.lock.json", StringComparison.OrdinalIgnoreCase) || fileName.Contains("manifesttool", StringComparison.OrdinalIgnoreCase) || fileName.Contains("releaselay", StringComparison.OrdinalIgnoreCase) || fileName.Contains("installerpreflight", StringComparison.OrdinalIgnoreCase)) return false;
-        return path.All(character => character is >= '!' and <= '~' && character != '|');
+        return true;
     }
+
+    private static bool IsRecordedNonInstallerResidue(string path)
+    {
+        if (!IsSafeArtifactPathSyntax(path)) return false;
+        var separator = path.IndexOf('/');
+        if (separator < 0 || path.IndexOf('/', separator + 1) >= 0) return false;
+        var directory = path[..separator];
+        if (directory != BetaReleaseLayoutValidator.DesktopDirectoryName && directory != BetaReleaseLayoutValidator.OfflineUpdateToolDirectoryName) return false;
+        var fileName = path[(separator + 1)..];
+        if (fileName.Contains("manifesttool", StringComparison.OrdinalIgnoreCase) || fileName.Contains("releaselay", StringComparison.OrdinalIgnoreCase) ||
+            fileName.Contains("installerpreflight", StringComparison.OrdinalIgnoreCase)) return false;
+        return Path.GetExtension(fileName).Equals(".pdb", StringComparison.OrdinalIgnoreCase) || fileName == "packages.lock.json";
+    }
+
+    private static bool IsSafeArtifactPathSyntax(string path) =>
+        !string.IsNullOrWhiteSpace(path) && path.Length <= 512 && !path.Contains(':') && !path.Contains('\\') &&
+        !path.Contains("//", StringComparison.Ordinal) && !path.Split('/').Any(segment => segment is "" or "." or ".." || ForbiddenSegments.Contains(segment)) &&
+        path.All(character => character is >= '!' and <= '~' && character != '|');
 
     private static string RequireDirectory(string path)
     {

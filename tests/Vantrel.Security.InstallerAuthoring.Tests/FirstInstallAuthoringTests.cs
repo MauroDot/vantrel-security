@@ -75,6 +75,31 @@ public sealed class FirstInstallAuthoringTests
     }
 
     [TestMethod]
+    public void Authoring_revalidates_recorded_residue_without_emitting_it_as_msi_files()
+    {
+        using var scope = new LayoutScope(recordedResidue: true);
+        var plan = new InstallerInputValidator().CreatePlan(scope.Root, "0.1.1");
+        Assert.IsTrue(InstallerInputPlanCodec.TryParse(File.ReadAllBytes(scope.PlanPath), out var parsed));
+        Assert.HasCount(plan.Artifacts.Count, parsed!.Artifacts);
+
+        WixFirstInstallAuthoring.ValidateAndWrite(scope.Root, scope.PlanPath, scope.AuthoringOutputPath);
+        var wix = File.ReadAllText(scope.AuthoringOutputPath);
+        Assert.IsFalse(wix.Contains(".pdb", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(wix.Contains("packages.lock.json", StringComparison.OrdinalIgnoreCase));
+        Assert.IsTrue(plan.Artifacts.All(item => wix.Contains("$(var.ReleaseLayoutRoot)\\" + item.SourceRelativePath.Replace('/', '\\'), StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public void Authoring_rejects_changed_recorded_residue_before_writing_wix()
+    {
+        using var scope = new LayoutScope(recordedResidue: true);
+        File.AppendAllText(Path.Combine(scope.Root, "desktop", "Vantrel.Security.Desktop.pdb"), "changed");
+
+        Assert.ThrowsExactly<IOException>(() => WixFirstInstallAuthoring.ValidateAndWrite(scope.Root, scope.PlanPath, scope.AuthoringOutputPath));
+        Assert.IsFalse(File.Exists(scope.AuthoringOutputPath));
+    }
+
+    [TestMethod]
     public void Wix_project_builds_an_msi_only_from_a_validated_disposable_plan()
     {
         using var scope = new LayoutScope();
@@ -140,7 +165,7 @@ public sealed class FirstInstallAuthoringTests
         internal string PlanPath => Path.Combine(Path.GetTempPath(), "vantrel-installer-authoring-plan-" + _id + ".txt");
         private readonly string _id = Guid.NewGuid().ToString("N");
 
-        internal LayoutScope()
+        internal LayoutScope(bool recordedResidue = false)
         {
             Directory.CreateDirectory(Root);
             var descriptor = new BetaReleaseDescriptor(new string('a', 40), "0.1.0-beta.1", 7,
@@ -150,6 +175,12 @@ public sealed class FirstInstallAuthoringTests
             File.WriteAllBytes(Path.Combine(Root, BetaReleaseDescriptorCodec.FileName), BetaReleaseDescriptorCodec.CreateCanonical(descriptor));
             foreach (var name in ReleasePayloadVerifier.ExactFileNames) Write("service/" + name, name);
             foreach (var artifact in ReleaseSigningContract.VantrelOwnedPeArtifacts.Where(item => !item.RelativePath.StartsWith("service/", StringComparison.Ordinal))) Write(artifact.RelativePath, artifact.RelativePath);
+            if (recordedResidue)
+            {
+                Write("desktop/Vantrel.Security.Desktop.pdb", "desktop symbols");
+                Write("offline-update-tool/Vantrel.Security.OfflineUpdateTool.pdb", "tool symbols");
+                Write("offline-update-tool/packages.lock.json", "tool lock graph");
+            }
             var artifacts = EnumerateArtifacts().ToArray();
             var evidence = ReleaseSigningContract.VantrelOwnedPeArtifacts.Select(item => new AuthenticodeReleaseEvidence(item.RelativePath,
                 AuthenticodeVerificationCategory.Valid, "test-publisher-policy", PrimarySignatureCountPolicyCategory.ExactlyOne, TimestampPolicyCategory.ValidRfc3161)).ToArray();

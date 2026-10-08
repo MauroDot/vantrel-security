@@ -24,6 +24,70 @@ public sealed class InstallerInputValidatorTests
     }
 
     [TestMethod]
+    public void Recorded_publish_residue_is_hashed_but_omitted_from_the_plan()
+    {
+        using var scope = new LayoutScope("desktop/Vantrel.Security.Desktop.pdb", "desktop/packages.lock.json",
+            "offline-update-tool/Vantrel.Security.OfflineUpdateTool.pdb", "offline-update-tool/packages.lock.json");
+
+        var plan = new InstallerInputValidator().CreatePlan(scope.Root, "0.1.1");
+        Assert.HasCount(20, plan.Artifacts);
+        Assert.IsFalse(plan.Artifacts.Any(item => item.SourceRelativePath.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase) ||
+            item.SourceRelativePath.EndsWith("/packages.lock.json", StringComparison.Ordinal)));
+        Assert.IsTrue(InstallerInputPlanCodec.TryParse(System.Text.Encoding.UTF8.GetBytes(InstallerInputValidator.CreateCanonicalPlan(plan)), out var parsed));
+        Assert.HasCount(20, parsed!.Artifacts);
+    }
+
+    [TestMethod]
+    public void Changed_missing_or_unrecorded_publish_residue_still_fails()
+    {
+        foreach (var residue in new[] { "desktop/Vantrel.Security.Desktop.pdb", "offline-update-tool/packages.lock.json" })
+        {
+            using (var changed = new LayoutScope(residue))
+            {
+                File.AppendAllText(Path.Combine(changed.Root, residue.Replace('/', Path.DirectorySeparatorChar)), "changed");
+                Assert.Throws<IOException>(() => new InstallerInputValidator().CreatePlan(changed.Root, "0.1.1"));
+            }
+            using (var missing = new LayoutScope(residue))
+            {
+                File.Delete(Path.Combine(missing.Root, residue.Replace('/', Path.DirectorySeparatorChar)));
+                Assert.Throws<IOException>(() => new InstallerInputValidator().CreatePlan(missing.Root, "0.1.1"));
+            }
+            using (var unrecorded = new LayoutScope())
+            {
+                var path = Path.Combine(unrecorded.Root, residue.Replace('/', Path.DirectorySeparatorChar));
+                File.WriteAllText(path, "unrecorded");
+                Assert.Throws<IOException>(() => new InstallerInputValidator().CreatePlan(unrecorded.Root, "0.1.1"));
+            }
+        }
+    }
+
+    [TestMethod]
+    [DataRow("service/extra.pdb")]
+    [DataRow("desktop/nested/extra.pdb")]
+    [DataRow("desktop/install.ps1")]
+    [DataRow("offline-update-tool/packages.lock.JSON")]
+    [DataRow("offline-update-tool/private.key")]
+    public void Other_recorded_unsupported_artifacts_remain_rejected(string artifact)
+    {
+        using var scope = new LayoutScope(artifact);
+        Assert.Throws<IOException>(() => new InstallerInputValidator().CreatePlan(scope.Root, "0.1.1"));
+    }
+
+    [TestMethod]
+    public void Recorded_publish_residue_reparse_is_rejected_when_symbolic_links_are_permitted()
+    {
+        const string residue = "desktop/Vantrel.Security.Desktop.pdb";
+        using var scope = new LayoutScope(residue);
+        var path = Path.Combine(scope.Root, residue.Replace('/', Path.DirectorySeparatorChar));
+        File.Delete(path);
+        try { File.CreateSymbolicLink(path, Path.Combine(scope.Root, "desktop", "Vantrel.Security.Desktop.dll")); }
+        catch (IOException error) when (error.HResult == unchecked((int)0x80070522)) { Assert.Inconclusive("Windows symbolic-link privilege is not held."); return; }
+        catch (UnauthorizedAccessException error) when (error.HResult == unchecked((int)0x80070522)) { Assert.Inconclusive("Windows symbolic-link privilege is not held."); return; }
+
+        Assert.Throws<IOException>(() => new InstallerInputValidator().CreatePlan(scope.Root, "0.1.1"));
+    }
+
+    [TestMethod]
     public void Static_model_preserves_only_initial_install_behavior()
     {
         var model = InitialInstallContract.Model;
@@ -190,7 +254,7 @@ public sealed class InstallerInputValidatorTests
     {
         internal string Root { get; } = Path.Combine(Path.GetTempPath(), "vantrel-installer-input-" + Guid.NewGuid().ToString("N"));
 
-        internal LayoutScope()
+        internal LayoutScope(params string[] recordedExtras)
         {
             Directory.CreateDirectory(Root);
             var descriptor = new BetaReleaseDescriptor(new string('a', 40), "0.1.0-beta.1", 7,
@@ -202,6 +266,7 @@ public sealed class InstallerInputValidatorTests
             foreach (var file in ReleaseSigningContract.VantrelOwnedPeArtifacts.Where(item => !item.RelativePath.StartsWith("service/", StringComparison.Ordinal))) Write(file.RelativePath, file.RelativePath);
             Write("desktop/desktop.deps.json", "desktop dependencies");
             Write("offline-update-tool/tool.runtimeconfig.json", "tool runtime");
+            foreach (var extra in recordedExtras) Write(extra, extra);
             var artifacts = EnumerateArtifacts().ToArray();
             var evidence = ReleaseSigningContract.VantrelOwnedPeArtifacts.Select(item => new AuthenticodeReleaseEvidence(item.RelativePath,
                 AuthenticodeVerificationCategory.Valid, "test-publisher-policy", PrimarySignatureCountPolicyCategory.ExactlyOne, TimestampPolicyCategory.ValidRfc3161)).ToArray();
