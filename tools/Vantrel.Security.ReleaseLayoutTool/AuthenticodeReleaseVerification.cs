@@ -1,7 +1,10 @@
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Win32.SafeHandles;
+
+[assembly: InternalsVisibleTo("Vantrel.Security.ReleaseLayoutTool.Tests")]
 
 namespace Vantrel.Security.ReleaseLayoutTool;
 
@@ -265,7 +268,7 @@ public sealed class WindowsWinTrustProviderEvidenceReader : IWinTrustProviderEvi
     private const string Sha256Oid = "2.16.840.1.101.3.4.2.1";
     private const string Sha384Oid = "2.16.840.1.101.3.4.2.2";
     private const string Sha512Oid = "2.16.840.1.101.3.4.2.3";
-    private const string NestedSignatureOid = "1.3.6.1.4.1.311.2.4.1";
+    internal const string NestedSignatureOid = "1.3.6.1.4.1.311.2.4.1";
     private readonly IAuthenticodeTimestampEvidenceVerifier _timestampVerifier;
 
     public WindowsWinTrustProviderEvidenceReader(IAuthenticodeTimestampEvidenceVerifier? timestampVerifier = null) =>
@@ -284,7 +287,7 @@ public sealed class WindowsWinTrustProviderEvidenceReader : IWinTrustProviderEvi
         return new(NativeAuthenticodeTrustCategory.Success, primaryCount, ReadPrimaryFileDigest(message), ReadRfc3161Timestamp(message, attributes), signer);
     }
 
-    private static SignerCertificateEvidence GetProviderSigner(IntPtr state, out bool extraSigner)
+    internal static SignerCertificateEvidence GetProviderSigner(IntPtr state, out bool extraSigner)
     {
         extraSigner = false;
         IntPtr library = IntPtr.Zero;
@@ -317,7 +320,7 @@ public sealed class WindowsWinTrustProviderEvidenceReader : IWinTrustProviderEvi
         finally { if (library != IntPtr.Zero) NativeLibrary.Free(library); }
     }
 
-    private static NativeDigestAlgorithmCategory ReadPrimaryFileDigest(NativeSignedMessage message)
+    internal static NativeDigestAlgorithmCategory ReadPrimaryFileDigest(NativeSignedMessage message)
     {
         var content = message.ReadBytes(NativeSignedMessage.CmsgContentParam, 0);
         return DerReader.TryReadAuthenticodeFileDigestOid(content, out var oid)
@@ -325,7 +328,7 @@ public sealed class WindowsWinTrustProviderEvidenceReader : IWinTrustProviderEvi
             : NativeDigestAlgorithmCategory.Indeterminate;
     }
 
-    private TimestampPolicyCategory ReadRfc3161Timestamp(NativeSignedMessage message, IReadOnlyList<NativeAttribute> attributes)
+    internal TimestampPolicyCategory ReadRfc3161Timestamp(NativeSignedMessage message, IReadOnlyList<NativeAttribute> attributes)
     {
         return AuthenticodeTimestampEvidence.Classify(
             attributes.Select(attribute => new AuthenticodeTimestampAttribute(attribute.Oid, attribute.Values)).ToArray(),
@@ -372,7 +375,14 @@ internal sealed class NativeSignedMessage : IDisposable
     private const int MaxNativeValueBytes = 4 * 1024 * 1024;
     private IntPtr _store;
     private IntPtr _message;
-    private NativeSignedMessage(IntPtr store, IntPtr message) { _store = store; _message = message; }
+    private readonly bool _ownsMessage;
+    private readonly Action<IntPtr> _closeMessage;
+    private NativeSignedMessage(IntPtr store, IntPtr message, bool ownsMessage = true, Action<IntPtr>? closeMessage = null)
+    { _store = store; _message = message; _ownsMessage = ownsMessage; _closeMessage = closeMessage ?? (value => { _ = CryptMsgClose(value); }); }
+
+    internal static NativeSignedMessage Borrow(IntPtr message, Action<IntPtr>? closeMessage = null) => message == IntPtr.Zero
+        ? throw new AuthenticodeProviderUnavailableException()
+        : new NativeSignedMessage(IntPtr.Zero, message, false, closeMessage);
 
     internal static NativeSignedMessage Open(string path)
     {
@@ -455,7 +465,7 @@ internal sealed class NativeSignedMessage : IDisposable
 
     public void Dispose()
     {
-        if (_message != IntPtr.Zero) { CryptMsgClose(_message); _message = IntPtr.Zero; }
+        if (_message != IntPtr.Zero) { if (_ownsMessage) _closeMessage(_message); _message = IntPtr.Zero; }
         if (_store != IntPtr.Zero) { CertCloseStore(_store, 0); _store = IntPtr.Zero; }
     }
 

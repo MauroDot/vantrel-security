@@ -61,6 +61,11 @@ public static class ReleaseLayoutToolCommand
             RequireExactKeys(values, "--file");
             output.Write(SinglePeAuthenticodeInspectionOutput.Create(new SinglePeAuthenticodeInspector().Inspect(Required(values, "--file"))));
         }
+        else if (command == "inspect-msi-authenticode")
+        {
+            RequireExactKeys(values, "--file");
+            output.Write(MsiAuthenticodeInspectionOutput.Create(new SingleMsiAuthenticodeInspector().Inspect(Required(values, "--file"))));
+        }
         else throw new ArgumentException();
     }
 
