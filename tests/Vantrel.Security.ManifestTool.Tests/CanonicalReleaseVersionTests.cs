@@ -1,4 +1,5 @@
 using System.Text;
+using System.Security.Cryptography;
 using Vantrel.Security.Core;
 using Vantrel.Security.ManifestTool;
 
@@ -7,6 +8,17 @@ namespace Vantrel.Security.ManifestTool.Tests;
 [TestClass]
 public sealed class CanonicalReleaseVersionTests
 {
+    [TestMethod]
+    public void Manifest_tool_uses_the_approved_separate_public_roots()
+    {
+        Assert.AreEqual("21E21285DD1BE7655F34DB1E75F826B89DD615D69C606BA090B9F0AF560DDBBD",
+            Convert.ToHexString(SHA256.HashData(OfflineReleasePublicKeys.TrustedManifestSubjectPublicKeyInfo)));
+        Assert.AreEqual("1BA6C704BEA16085A39BCECE9600A845223943A0846F961273FCDAAC60FD2782",
+            Convert.ToHexString(SHA256.HashData(OfflineReleasePublicKeys.ReleaseMetadataSubjectPublicKeyInfo)));
+        CollectionAssert.AreNotEqual(OfflineReleasePublicKeys.TrustedManifestSubjectPublicKeyInfo,
+            OfflineReleasePublicKeys.ReleaseMetadataSubjectPublicKeyInfo);
+    }
+
     [TestMethod]
     public void Authoritative_component_mapping_is_ordered_and_supplies_the_exact_manifest_hash_set()
     {

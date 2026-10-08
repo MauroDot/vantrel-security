@@ -6,8 +6,6 @@ using Vantrel.Security.ManifestTool;
 
 try
 {
-    const string TrustedManifestPublicKeyBase64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQB/yA4nU8K0EkKlqELYb3Udxsek/UWTa/8VqNeLQj+brJ4dHCB/0LaJAPdrK5tLICfT4XrBZFJkJEtEEiHj9BQ==";
-    const string ReleaseMetadataPublicKeyBase64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAErjlbxAQm0yHNOBzbAQ2JMsT3R+fEbwEi+D8BM90klSrAfqhSf4SkJ5b8Y9oFbiItIeoDlRSZsAHD/EchoRgkLw==";
     var arguments = args.ToList();
     if (arguments.Count == 0 || arguments[0] is not ("sign" or "verify" or "sign-release-metadata" or "verify-release-metadata"))
         throw new ArgumentException("Use sign, verify, sign-release-metadata, or verify-release-metadata.");
@@ -41,7 +39,7 @@ try
     byte[] VerifyManifestAndComponents()
     {
         var manifestBytes = File.ReadAllBytes(manifestPath);
-        var trustedKey = Convert.FromBase64String(TrustedManifestPublicKeyBase64);
+        var trustedKey = OfflineReleasePublicKeys.TrustedManifestSubjectPublicKeyInfo;
         if (!TrustedManifestCodec.TryParse(manifestBytes, out var manifest, out _)) throw new InvalidDataException("Manifest parse failed.");
         if (!TrustedManifestCodec.Verify(manifest!, trustedKey)) throw new CryptographicException("Manifest signature is invalid.");
         foreach (var file in files)
@@ -60,7 +58,7 @@ try
         var privateKeyPath = Path.GetFullPath(Required("--private-key"));
         var hashes = files.ToDictionary(item => item.Component, item => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(payload, item.FileName)))));
         var canonical = TrustedManifestCodec.CreateCanonicalPayload(releaseVersion, hashes);
-        using var signingKey = ImportFixedKey(privateKeyPath, Convert.FromBase64String(TrustedManifestPublicKeyBase64));
+        using var signingKey = ImportFixedKey(privateKeyPath, OfflineReleasePublicKeys.TrustedManifestSubjectPublicKeyInfo);
         var signature = signingKey.SignData(canonical, HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
         File.WriteAllBytes(manifestPath, Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(canonical) + "signature=" + Convert.ToBase64String(signature) + "\n"));
         Console.WriteLine("Signed fixed trusted manifest written.");
@@ -81,7 +79,7 @@ try
             throw new ArgumentException("Published time must be canonical UTC whole-second text.");
         var manifestBytes = VerifyManifestAndComponents();
         var manifestHash = Convert.ToHexString(SHA256.HashData(manifestBytes));
-        using var signingKey = ImportFixedKey(privateKeyPath, Convert.FromBase64String(ReleaseMetadataPublicKeyBase64));
+        using var signingKey = ImportFixedKey(privateKeyPath, OfflineReleasePublicKeys.ReleaseMetadataSubjectPublicKeyInfo);
         File.WriteAllBytes(metadataPath, ReleaseMetadataCodec.CreateFile(sequence, manifestHash, displayVersion, publishedAtUtc, signingKey));
         Console.WriteLine("Signed fixed release metadata written.");
     }

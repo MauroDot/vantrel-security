@@ -143,11 +143,22 @@ public sealed class SinglePeAuthenticodeInspectionTests
     }
 
     [TestMethod]
-    public void Production_profile_remains_unconfigured_and_is_not_used_by_the_inspector()
+    public void Production_profile_requires_the_exact_three_ekus_and_unknown_profiles_fail_closed()
     {
         var profiles = new SourceOwnedReleaseSigningProfileSource();
         Assert.IsTrue(profiles.TryGet("vantrel-production", out var profile));
-        Assert.IsFalse(profile.IsConfigured);
+        Assert.IsTrue(profile.IsConfigured);
+        Assert.AreEqual("vantrel-azure-artifact-signing-durable-eku-v1", profile.PolicyId);
+        Assert.IsInstanceOfType<AzureArtifactSigningEkuPolicy>(profile.PublisherPolicy);
+        Assert.AreEqual("1.3.6.1.5.5.7.3.3", AzureArtifactSigningEkuPolicy.CodeSigningEku);
+        Assert.AreEqual("1.3.6.1.4.1.311.97.1.0", AzureArtifactSigningEkuPolicy.AzureArtifactSigningPublicTrustEku);
+        Assert.AreEqual("1.3.6.1.4.1.311.97.790899309.69055806.5460467.69741027", AzureArtifactSigningEkuPolicy.VantrelCertificateProfileEku);
+        Assert.IsTrue(profile.PublisherPolicy.Matches(ValidEvidence().Signer!));
+        Assert.IsFalse(profile.PublisherPolicy.Matches(ValidEvidence(
+            AzureArtifactSigningEkuPolicy.CodeSigningEku,
+            AzureArtifactSigningEkuPolicy.AzureArtifactSigningPublicTrustEku,
+            "1.3.6.1.4.1.311.97.790899309.69055806.5460467.69741028").Signer!));
+        Assert.IsFalse(profiles.TryGet("unknown-profile", out _));
     }
 
     private static NativeAuthenticodeEvidence ValidEvidence(params string[] ekus) => ValidEvidenceWithHash(new string('C', 64), ekus);

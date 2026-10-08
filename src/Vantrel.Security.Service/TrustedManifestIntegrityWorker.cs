@@ -169,14 +169,12 @@ public sealed class TrustedManifestIntegritySource
 
 internal static class ReleaseMetadataPublicKey
 {
-    // SubjectPublicKeyInfo DER for the fixed, separate production release-metadata NIST P-256 verifier. No private key is present.
-    internal static readonly byte[] SubjectPublicKeyInfo = Convert.FromBase64String("MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAErjlbxAQm0yHNOBzbAQ2JMsT3R+fEbwEi+D8BM90klSrAfqhSf4SkJ5b8Y9oFbiItIeoDlRSZsAHD/EchoRgkLw==");
+    internal static byte[] SubjectPublicKeyInfo => OfflineReleasePublicKeys.ReleaseMetadataSubjectPublicKeyInfo;
 }
 
 internal static class TrustedManifestPublicKey
 {
-    // SubjectPublicKeyInfo DER for the one fixed production NIST P-256 verifier. No private key is present.
-    internal static readonly byte[] SubjectPublicKeyInfo = Convert.FromBase64String("MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQB/yA4nU8K0EkKlqELYb3Udxsek/UWTa/8VqNeLQj+brJ4dHCB/0LaJAPdrK5tLICfT4XrBZFJkJEtEEiHj9BQ==");
+    internal static byte[] SubjectPublicKeyInfo => OfflineReleasePublicKeys.TrustedManifestSubjectPublicKeyInfo;
 }
 
 public sealed class TrustedManifestIntegrityWorker(TrustedManifestRefreshCoordinator coordinator, ILogger<TrustedManifestIntegrityWorker> logger) : BackgroundService

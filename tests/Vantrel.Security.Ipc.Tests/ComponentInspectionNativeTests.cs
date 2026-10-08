@@ -1,6 +1,8 @@
 using Vantrel.Security.Service;
 using Vantrel.Security.Core;
 using System.ComponentModel;
+using System.Reflection;
+using System.Security.Cryptography;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -12,20 +14,37 @@ public sealed class ComponentInspectionNativeTests
     [TestMethod]
     public void Production_release_metadata_verifier_is_a_separate_valid_p256_public_key()
     {
-        using var key = System.Security.Cryptography.ECDsa.Create();
+        using var key = ECDsa.Create();
         key.ImportSubjectPublicKeyInfo(ReleaseMetadataPublicKey.SubjectPublicKeyInfo, out var read);
         Assert.AreEqual(ReleaseMetadataPublicKey.SubjectPublicKeyInfo.Length, read);
         Assert.AreEqual(256, key.KeySize);
+        Assert.AreEqual("1BA6C704BEA16085A39BCECE9600A845223943A0846F961273FCDAAC60FD2782",
+            Convert.ToHexString(SHA256.HashData(ReleaseMetadataPublicKey.SubjectPublicKeyInfo)));
+        CollectionAssert.AreEqual(OfflineReleasePublicKeys.ReleaseMetadataSubjectPublicKeyInfo, ReleaseMetadataPublicKey.SubjectPublicKeyInfo);
         CollectionAssert.AreNotEqual(TrustedManifestPublicKey.SubjectPublicKeyInfo, ReleaseMetadataPublicKey.SubjectPublicKeyInfo);
     }
 
     [TestMethod]
     public void Production_trusted_manifest_verifier_is_one_valid_p256_public_key()
     {
-        using var key = System.Security.Cryptography.ECDsa.Create();
+        using var key = ECDsa.Create();
         key.ImportSubjectPublicKeyInfo(TrustedManifestPublicKey.SubjectPublicKeyInfo, out var read);
         Assert.AreEqual(TrustedManifestPublicKey.SubjectPublicKeyInfo.Length, read);
         Assert.AreEqual(256, key.KeySize);
+        Assert.AreEqual("21E21285DD1BE7655F34DB1E75F826B89DD615D69C606BA090B9F0AF560DDBBD",
+            Convert.ToHexString(SHA256.HashData(TrustedManifestPublicKey.SubjectPublicKeyInfo)));
+        CollectionAssert.AreEqual(OfflineReleasePublicKeys.TrustedManifestSubjectPublicKeyInfo, TrustedManifestPublicKey.SubjectPublicKeyInfo);
+    }
+
+    [TestMethod]
+    public void Default_offline_verifier_uses_the_same_separate_production_roots()
+    {
+        var verifier = new OfflineReleaseVerifier();
+        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var metadata = (byte[])typeof(OfflineReleaseVerifier).GetField("_releaseMetadataPublicKey", flags)!.GetValue(verifier)!;
+        var manifest = (byte[])typeof(OfflineReleaseVerifier).GetField("_trustedManifestPublicKey", flags)!.GetValue(verifier)!;
+        CollectionAssert.AreEqual(OfflineReleasePublicKeys.ReleaseMetadataSubjectPublicKeyInfo, metadata);
+        CollectionAssert.AreEqual(OfflineReleasePublicKeys.TrustedManifestSubjectPublicKeyInfo, manifest);
     }
 
     [TestMethod]

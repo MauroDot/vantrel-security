@@ -12,8 +12,6 @@ public sealed record ServicePayloadComponent(TrustedManifestComponent Component,
 
 public static class ReleasePayloadVerifier
 {
-    private const string TrustedManifestPublicKeyBase64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQB/yA4nU8K0EkKlqELYb3Udxsek/UWTa/8VqNeLQj+brJ4dHCB/0LaJAPdrK5tLICfT4XrBZFJkJEtEEiHj9BQ==";
-    private const string ReleaseMetadataPublicKeyBase64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAErjlbxAQm0yHNOBzbAQ2JMsT3R+fEbwEi+D8BM90klSrAfqhSf4SkJ5b8Y9oFbiItIeoDlRSZsAHD/EchoRgkLw==";
     public static IReadOnlyList<ServicePayloadComponent> ServiceComponents { get; } = Array.AsReadOnly(new ServicePayloadComponent[]
     {
         new(TrustedManifestComponent.ServiceExe, "Vantrel.Security.Service.exe"),
@@ -32,11 +30,11 @@ public static class ReleasePayloadVerifier
         ValidateExactReleaseSet(root);
         var manifestBytes = File.ReadAllBytes(Path.Combine(root, "Vantrel.Security.TrustedManifest"));
         if (!TrustedManifestCodec.TryParse(manifestBytes, out var manifest, out _) || manifest is null ||
-            !TrustedManifestCodec.Verify(manifest, Convert.FromBase64String(TrustedManifestPublicKeyBase64)))
+            !TrustedManifestCodec.Verify(manifest, OfflineReleasePublicKeys.TrustedManifestSubjectPublicKeyInfo))
             throw new InvalidDataException("Trusted manifest verification failed.");
         var metadataBytes = File.ReadAllBytes(Path.Combine(root, "Vantrel.Security.ReleaseMetadata"));
         if (!ReleaseMetadataCodec.TryParse(metadataBytes, out var metadata, out _) || metadata is null ||
-            !ReleaseMetadataCodec.Verify(metadata, Convert.FromBase64String(ReleaseMetadataPublicKeyBase64)))
+            !ReleaseMetadataCodec.Verify(metadata, OfflineReleasePublicKeys.ReleaseMetadataSubjectPublicKeyInfo))
             throw new InvalidDataException("Release metadata verification failed.");
         var manifestHash = Convert.ToHexString(SHA256.HashData(manifestBytes));
         if (!string.Equals(metadata.ManifestSha256, manifestHash, StringComparison.Ordinal))
