@@ -10,6 +10,196 @@ namespace Vantrel.Security.InstallerPreflight.Tests;
 public sealed class InstallerInputValidatorTests
 {
     [TestMethod]
+    public void Signed_sandbox_preparation_validates_completed_inputs_and_copies_only_approved_bytes()
+    {
+        using var scope = new LayoutScope();
+        using var inputs = new SignedCandidateScope(scope.Root);
+        var output = Path.Combine(inputs.Root, "bundle");
+        inputs.Prepare(output);
+        var copied = Path.Combine(output, "input", "VantrelSecurity.msi");
+        File.WriteAllText(Path.Combine(output, "input", "Validate-VantrelSignedCandidateSandbox.ps1"), "# synthetic validator\n");
+        SignedSandboxCandidatePreparation.ValidatePreparedInput(Path.Combine(output, "input"), inputs.DistributionHash);
+        Assert.AreEqual(inputs.MsiHash, Hash(copied));
+        Assert.AreEqual(inputs.RecordHash, Hash(Path.Combine(output, "input", BetaReleaseLayoutValidator.RecordFileName)));
+        Assert.AreEqual(inputs.PlanHash, Hash(Path.Combine(output, "input", InstallerInputValidator.PlanFileName)));
+        Assert.AreEqual(inputs.DistributionHash, Hash(Path.Combine(output, "input", MsiDistributionRecordCodec.FileName)));
+        var manifest = File.ReadAllBytes(Path.Combine(output, "input", SignedSandboxCandidateInputCodec.FileName));
+        Assert.IsTrue(SignedSandboxCandidateInputCodec.TryParse(manifest, out var parsed));
+        Assert.IsNotNull(parsed);
+        Assert.AreEqual(inputs.DistributionHash, parsed.DistributionRecordSha256);
+        Assert.AreEqual(inputs.MsiHash, parsed.Installation.MsiSha256);
+        Assert.Throws<IOException>(() => inputs.Prepare(output));
+        File.AppendAllText(copied, "changed");
+        Assert.Throws<IOException>(() => SignedSandboxCandidatePreparation.ValidatePreparedInput(
+            Path.Combine(output, "input"), inputs.DistributionHash));
+    }
+
+    [TestMethod]
+    public void Signed_sandbox_preparation_rejects_each_hash_and_changed_input_without_creating_output()
+    {
+        using var scope = new LayoutScope();
+        using var inputs = new SignedCandidateScope(scope.Root);
+        foreach (var which in new[] { "msi", "plan", "release", "distribution" })
+        {
+            var output = Path.Combine(inputs.Root, "rejected-" + which);
+            inputs.PrepareExpectFailure(output, which);
+            Assert.IsFalse(Directory.Exists(output), which);
+        }
+        File.AppendAllText(inputs.SignedMsi, "changed");
+        var changed = Path.Combine(inputs.Root, "changed-copy");
+        Assert.Throws<IOException>(() => inputs.Prepare(changed));
+        Assert.IsFalse(Directory.Exists(changed));
+    }
+
+    [TestMethod]
+    public void Signed_sandbox_preparation_rejects_mismatched_plan_record_and_unsafe_paths()
+    {
+        using var scope = new LayoutScope();
+        using var inputs = new SignedCandidateScope(scope.Root);
+        var output = Path.Combine(inputs.Root, "unsafe");
+        Assert.Throws<IOException>(() => SignedSandboxCandidatePreparation.Prepare(scope.Root, inputs.Plan,
+            inputs.SignedMsi, inputs.Distribution, inputs.MsiHash, inputs.PlanHash, inputs.RecordHash,
+            inputs.DistributionHash, scope.Root));
+        Assert.Throws<IOException>(() => SignedSandboxCandidatePreparation.Prepare(scope.Root, inputs.Plan,
+            inputs.SignedMsi, inputs.Distribution, inputs.MsiHash, inputs.PlanHash, inputs.RecordHash,
+            inputs.DistributionHash, Path.Combine(inputs.Root, "..", "unsafe")));
+        File.AppendAllText(Path.Combine(scope.Root, "desktop", "desktop.deps.json"), "changed");
+        Assert.Throws<IOException>(() => inputs.Prepare(output));
+        Assert.IsFalse(Directory.Exists(output));
+    }
+
+    [TestMethod]
+    public void Signed_sandbox_preparation_rejects_canonical_distribution_cross_binding_mismatch()
+    {
+        using var scope = new LayoutScope();
+        using var inputs = new SignedCandidateScope(scope.Root);
+        foreach (var which in new[] { "msi", "plan", "release" })
+        {
+            var altered = new MsiDistributionRecord("VantrelSecurity.msi",
+                which == "msi" ? new string('A', 64) : inputs.MsiHash,
+                which == "release" ? new string('A', 64) : inputs.RecordHash,
+                which == "plan" ? new string('A', 64) : inputs.PlanHash,
+                MsiAuthenticodeInspectionResult.PolicyId, NativeAuthenticodeTrustCategory.Success,
+                PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256,
+                TimestampPolicyCategory.ValidRfc3161, AuthenticodeEkuPolicyCategory.Match);
+            File.WriteAllBytes(inputs.Distribution, MsiDistributionRecordCodec.CreateCanonical(altered));
+            var output = Path.Combine(inputs.Root, "mismatch-" + which);
+            Assert.Throws<IOException>(() => inputs.Prepare(output));
+            Assert.IsFalse(Directory.Exists(output));
+        }
+    }
+
+    [TestMethod]
+    public void Signed_sandbox_preparation_rejects_reparse_msi_when_symbolic_links_are_permitted()
+    {
+        using var scope = new LayoutScope();
+        using var inputs = new SignedCandidateScope(scope.Root);
+        var linked = Path.Combine(inputs.Root, "linked.msi");
+        try { File.CreateSymbolicLink(linked, inputs.SignedMsi); }
+        catch (IOException error) when (error.HResult == unchecked((int)0x80070522)) { Assert.Inconclusive("Windows symbolic-link privilege is not held."); return; }
+        catch (UnauthorizedAccessException error) when (error.HResult == unchecked((int)0x80070522)) { Assert.Inconclusive("Windows symbolic-link privilege is not held."); return; }
+        var output = Path.Combine(inputs.Root, "reparse-output");
+        Assert.Throws<IOException>(() => SignedSandboxCandidatePreparation.Prepare(scope.Root, inputs.Plan,
+            linked, inputs.Distribution, inputs.MsiHash, inputs.PlanHash, inputs.RecordHash,
+            inputs.DistributionHash, output));
+        Assert.IsFalse(Directory.Exists(output));
+    }
+
+    [TestMethod]
+    public void Signed_sandbox_input_rejects_changed_missing_and_extra_transferred_files()
+    {
+        using var scope = new LayoutScope();
+        using var inputs = new SignedCandidateScope(scope.Root);
+        foreach (var name in new[]
+        {
+            "VantrelSecurity.msi", InstallerInputValidator.PlanFileName,
+            BetaReleaseLayoutValidator.RecordFileName, MsiDistributionRecordCodec.FileName,
+            SignedSandboxCandidateInputCodec.FileName
+        })
+        {
+            var output = Path.Combine(inputs.Root, "transferred-" + name.Replace('.', '-'));
+            inputs.Prepare(output);
+            var input = Path.Combine(output, "input");
+            File.WriteAllText(Path.Combine(input, "Validate-VantrelSignedCandidateSandbox.ps1"), "# synthetic validator\n");
+            SignedSandboxCandidatePreparation.ValidatePreparedInput(input, inputs.DistributionHash);
+            File.AppendAllText(Path.Combine(input, name), "changed");
+            Assert.Throws<IOException>(() => SignedSandboxCandidatePreparation.ValidatePreparedInput(input, inputs.DistributionHash), name);
+        }
+        var missingOutput = Path.Combine(inputs.Root, "missing");
+        inputs.Prepare(missingOutput);
+        var missingInput = Path.Combine(missingOutput, "input");
+        File.WriteAllText(Path.Combine(missingInput, "Validate-VantrelSignedCandidateSandbox.ps1"), "# synthetic validator\n");
+        File.Delete(Path.Combine(missingInput, InstallerInputValidator.PlanFileName));
+        Assert.Throws<IOException>(() => SignedSandboxCandidatePreparation.ValidatePreparedInput(missingInput, inputs.DistributionHash));
+        var extraOutput = Path.Combine(inputs.Root, "extra");
+        inputs.Prepare(extraOutput);
+        var extraInput = Path.Combine(extraOutput, "input");
+        File.WriteAllText(Path.Combine(extraInput, "Validate-VantrelSignedCandidateSandbox.ps1"), "# synthetic validator\n");
+        File.WriteAllText(Path.Combine(extraInput, "unexpected.txt"), "extra");
+        Assert.Throws<IOException>(() => SignedSandboxCandidatePreparation.ValidatePreparedInput(extraInput, inputs.DistributionHash));
+    }
+
+    [TestMethod]
+    public void Signed_sandbox_codec_rejects_noncanonical_fields_paths_and_binding_changes()
+    {
+        using var scope = new LayoutScope();
+        using var inputs = new SignedCandidateScope(scope.Root);
+        var plan = new InstallerInputValidator().CreatePlan(scope.Root, "0.1.1");
+        var legacy = new SandboxValidationInput(plan.Descriptor.SourceCommit, plan.Descriptor.ReleaseVersion,
+            plan.Descriptor.ReleaseSequence, plan.Descriptor.PublishedAtUtc, plan.MsiProductVersion,
+            inputs.MsiHash, inputs.PlanHash, plan.Artifacts);
+        var canonical = System.Text.Encoding.ASCII.GetString(SignedSandboxCandidateInputCodec.CreateCanonical(
+            new(legacy, inputs.RecordHash, inputs.DistributionHash, MsiAuthenticodeInspectionResult.PolicyId)));
+        Assert.IsTrue(SignedSandboxCandidateInputCodec.TryParse(System.Text.Encoding.ASCII.GetBytes(canonical), out _));
+        foreach (var altered in new[]
+        {
+            canonical.Replace("schema=vantrel-signed-sandbox-input-v1", "schema=vantrel-sandbox-input-v1", StringComparison.Ordinal),
+            canonical.Replace("distribution-record-sha256=" + inputs.DistributionHash, "distribution-record-sha256=BAD", StringComparison.Ordinal),
+            canonical.Replace("policy-id=" + MsiAuthenticodeInspectionResult.PolicyId, "policy-id=anything", StringComparison.Ordinal),
+            canonical.Replace("service/Vantrel.Security.Service.exe", "../escape.exe", StringComparison.Ordinal),
+            canonical.Replace("artifact-count=", "extra=value\nartifact-count=", StringComparison.Ordinal),
+            canonical.Replace("\n", "\r\n", StringComparison.Ordinal)
+        }) Assert.IsFalse(SignedSandboxCandidateInputCodec.TryParse(System.Text.Encoding.ASCII.GetBytes(altered), out _));
+    }
+
+    private sealed class SignedCandidateScope : IDisposable
+    {
+        internal string Root { get; } = Path.Combine(Path.GetTempPath(), "vantrel-signed-sandbox-" + Guid.NewGuid().ToString("N"));
+        private readonly string _layout;
+        internal string Plan => Path.Combine(Root, InstallerInputValidator.PlanFileName);
+        internal string Distribution => Path.Combine(Root, MsiDistributionRecordCodec.FileName);
+        internal string SignedMsi => Path.Combine(Root, "VantrelSecurity.msi");
+        internal string MsiHash { get; }
+        internal string PlanHash => Hash(Plan);
+        internal string RecordHash => Hash(Path.Combine(_layout, BetaReleaseLayoutValidator.RecordFileName));
+        internal string DistributionHash => Hash(Distribution);
+        internal SignedCandidateScope(string layout)
+        {
+            _layout = layout;
+            Directory.CreateDirectory(Root);
+            var plan = new InstallerInputValidator().CreatePlan(layout, "0.1.1");
+            File.WriteAllText(Plan, InstallerInputValidator.CreateCanonicalPlan(plan));
+            File.WriteAllBytes(SignedMsi, [0x4D, 0x5A, 1, 2, 3]);
+            MsiHash = Hash(SignedMsi);
+            var record = new MsiDistributionRecord("VantrelSecurity.msi", MsiHash, RecordHash, PlanHash,
+                MsiAuthenticodeInspectionResult.PolicyId, NativeAuthenticodeTrustCategory.Success,
+                PrimarySignatureCountPolicyCategory.ExactlyOne, NativeDigestAlgorithmCategory.Sha256,
+                TimestampPolicyCategory.ValidRfc3161, AuthenticodeEkuPolicyCategory.Match);
+            File.WriteAllBytes(Distribution, MsiDistributionRecordCodec.CreateCanonical(record));
+        }
+        internal void Prepare(string output) => SignedSandboxCandidatePreparation.Prepare(_layout, Plan, SignedMsi,
+            Distribution, MsiHash, PlanHash, RecordHash, DistributionHash, output);
+        internal void PrepareExpectFailure(string output, string which) => Assert.Throws<IOException>(() =>
+            SignedSandboxCandidatePreparation.Prepare(_layout, Plan, SignedMsi, Distribution,
+                which == "msi" ? new string('A', 64) : MsiHash,
+                which == "plan" ? new string('A', 64) : PlanHash,
+                which == "release" ? new string('A', 64) : RecordHash,
+                which == "distribution" ? new string('A', 64) : DistributionHash, output));
+        public void Dispose() { if (Directory.Exists(Root)) Directory.Delete(Root, true); }
+    }
+    private static string Hash(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
+
+    [TestMethod]
     public void Valid_completed_layout_creates_a_safe_initial_install_plan()
     {
         using var scope = new LayoutScope();

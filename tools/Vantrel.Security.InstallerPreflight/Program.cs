@@ -9,6 +9,17 @@ try
     else if (args.Length == 17 && args[0] == "write-sandbox-input" && args[1] == "--installer-plan" && args[3] == "--msi" && args[5] == "--output" &&
              args[7] == "--source-commit" && args[9] == "--release-version" && args[11] == "--release-sequence" && args[13] == "--published-at-utc" && args[15] == "--msi-product-version")
         SandboxValidationInputCodec.CreateAndWrite(args[2], args[4], args[6], args[8], args[10], args[12], args[14], args[16]);
+    else if (args.Length == 19 && args[0] == "prepare-signed-sandbox-input" &&
+             args[1] == "--output-root" && args[3] == "--installer-plan" &&
+             args[5] == "--signed-msi" && args[7] == "--distribution-record" &&
+             args[9] == "--signed-msi-sha256" && args[11] == "--installer-plan-sha256" &&
+             args[13] == "--release-record-sha256" && args[15] == "--distribution-record-sha256" &&
+             args[17] == "--sandbox-output")
+        SignedSandboxCandidatePreparation.Prepare(args[2], args[4], args[6], args[8],
+            args[10], args[12], args[14], args[16], args[18]);
+    else if (args.Length == 5 && args[0] == "validate-signed-sandbox-input" &&
+             args[1] == "--input-root" && args[3] == "--distribution-record-sha256")
+        SignedSandboxCandidatePreparation.ValidatePreparedInput(args[2], args[4]);
     else if (args.Length > 0 && args[0] == "sign-msi-distribution")
         MsiDistributionCommand.ExecuteProduction(args);
     else

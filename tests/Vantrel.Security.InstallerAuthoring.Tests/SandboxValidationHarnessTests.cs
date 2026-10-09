@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -10,6 +11,196 @@ namespace Vantrel.Security.InstallerAuthoring.Tests;
 [TestClass]
 public sealed class SandboxValidationHarnessTests
 {
+    [TestMethod]
+    public void Signed_candidate_host_path_is_separate_and_never_builds_or_installs()
+    {
+        var script = File.ReadAllText(Path.Combine(RepositoryRoot(), "scripts", "Prepare-SignedWindowsSandboxValidation.ps1"));
+        StringAssert.Contains(script, "prepare-signed-sandbox-input");
+        StringAssert.Contains(script, "--no-build");
+        StringAssert.Contains(script, "--no-restore");
+        StringAssert.Contains(script, "$DistributionRecordSha256");
+        StringAssert.DoesNotMatch(script, new Regex("emit-wix|wixproj|msiexec|signtool|windowssandbox\\.exe|start-service|stop-service", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
+        var cli = File.ReadAllText(Path.Combine(RepositoryRoot(), "tools", "Vantrel.Security.InstallerPreflight", "Program.cs"));
+        StringAssert.Contains(cli, "prepare-signed-sandbox-input");
+        StringAssert.Contains(cli, "SignedSandboxCandidatePreparation.Prepare");
+    }
+
+    [TestMethod]
+    public void Signed_candidate_sandbox_configuration_is_isolated_and_has_approved_hash_argument()
+    {
+        var document = XDocument.Load(Path.Combine(RepositoryRoot(), "sandbox", "Vantrel.Security.SignedReleaseValidation.wsb"));
+        var root = document.Root!;
+        foreach (var key in new[] { "Networking", "ClipboardRedirection", "PrinterRedirection", "VGpu" })
+            Assert.AreEqual("Disable", root.Element(key)?.Value);
+        var mappings = root.Element("MappedFolders")?.Elements("MappedFolder").ToArray() ?? [];
+        Assert.HasCount(1, mappings);
+        Assert.AreEqual("true", mappings[0].Element("ReadOnly")?.Value);
+        Assert.AreEqual("C:\\VantrelInput", mappings[0].Element("SandboxFolder")?.Value);
+        Assert.AreEqual("__VANTREL_SIGNED_SANDBOX_INPUT__", mappings[0].Element("HostFolder")?.Value);
+        StringAssert.Contains(root.Element("LogonCommand")!.Element("Command")!.Value, "-ApprovedDistributionRecordSha256 \"__VANTREL_DISTRIBUTION_HASH__\"");
+    }
+
+    [TestMethod]
+    public void Signed_candidate_host_generates_xml_from_real_logic_with_quoted_approved_argument()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "vantrel-signed-wsb-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var harness = Path.Combine(root, "generate.ps1");
+            var output = Path.Combine(root, "generated.wsb");
+            const string mappedInput = @"C:\Vantrel Bundle & QA's\input";
+            var approvedHash = new string('A', 64);
+            File.WriteAllText(harness, """
+                $ErrorActionPreference = 'Stop'
+                try {
+                    $source = Get-Content -Raw -LiteralPath $args[0]
+                    $tokens = $null
+                    $parseErrors = $null
+                    $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$parseErrors)
+                    if ($parseErrors.Count -ne 0) { throw 'Host script is invalid.' }
+                    $definitions = @($ast.FindAll({ param($node)
+                        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                        $node.Name -ceq 'Write-SignedSandboxConfiguration'
+                    }, $true))
+                    if ($definitions.Count -ne 1) { throw 'Configuration generator is unavailable.' }
+                    . ([ScriptBlock]::Create($definitions[0].Extent.Text))
+                    Write-SignedSandboxConfiguration $args[1] $args[2] $args[3] $args[4]
+                } catch { exit 1 }
+                """);
+            using var process = Process.Start(new ProcessStartInfo("powershell.exe")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                ArgumentList =
+                {
+                    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", harness,
+                    Path.Combine(RepositoryRoot(), "scripts", "Prepare-SignedWindowsSandboxValidation.ps1"),
+                    Path.Combine(RepositoryRoot(), "sandbox", "Vantrel.Security.SignedReleaseValidation.wsb"),
+                    mappedInput, approvedHash, output
+                }
+            })!;
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            Assert.IsTrue(process.WaitForExit(10000), "Configuration generation did not finish.");
+            Task.WaitAll(stdout, stderr);
+            Assert.AreEqual(0, process.ExitCode, "Real configuration generation failed.");
+
+            var document = XDocument.Load(output);
+            var configuration = document.Root!;
+            foreach (var key in new[] { "Networking", "ClipboardRedirection", "PrinterRedirection", "VGpu" })
+                Assert.AreEqual("Disable", configuration.Element(key)?.Value);
+            var mappings = configuration.Element("MappedFolders")!.Elements("MappedFolder").ToArray();
+            Assert.HasCount(1, mappings);
+            Assert.AreEqual(mappedInput, mappings[0].Element("HostFolder")?.Value);
+            Assert.AreEqual("C:\\VantrelInput", mappings[0].Element("SandboxFolder")?.Value);
+            Assert.AreEqual("true", mappings[0].Element("ReadOnly")?.Value);
+            var command = configuration.Element("LogonCommand")!.Element("Command")!.Value;
+            Assert.AreEqual(
+                "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\VantrelInput\\Validate-VantrelSignedCandidateSandbox.ps1\" -ApprovedDistributionRecordSha256 \"" + approvedHash + "\"",
+                command);
+            StringAssert.Contains(File.ReadAllText(output), "Vantrel Bundle &amp; QA");
+            StringAssert.DoesNotMatch(command, new Regex("__VANTREL_", RegexOptions.CultureInvariant));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
+    public void Signed_candidate_sandbox_checks_all_bindings_before_installation()
+    {
+        var script = File.ReadAllText(Path.Combine(RepositoryRoot(), "sandbox", "Validate-VantrelSignedCandidateSandbox.ps1"));
+        var install = script.IndexOf("& \"$env:SystemRoot\\System32\\msiexec.exe\"", StringComparison.Ordinal);
+        Assert.IsGreaterThan(0, install);
+        foreach (var required in new[]
+        {
+            "Read-CanonicalPlan $planBytes", "Read-CanonicalSandboxInput $manifestPath",
+            "Read-CanonicalDistributionRecord $distributionRecordBytes", "Read-SafeInputBytes $releaseRecordPath",
+            "Sandbox distribution approval hash does not match.", "Sandbox distribution binding does not match.",
+            "Sandbox artifact plan does not match.", "Sandbox input is invalid."
+        })
+        {
+            var at = script.IndexOf(required, StringComparison.Ordinal);
+            Assert.IsGreaterThan(-1, at, required);
+            Assert.IsLessThan(install, at, required);
+        }
+        StringAssert.Contains(script, "'vantrel-signed-sandbox-input-v1'");
+        StringAssert.Contains(script, "'ValidRfc3161'");
+        StringAssert.Contains(script, "'ExactlyOne'");
+        StringAssert.Contains(script, "'Match'");
+        StringAssert.Contains(script, "[IO.FileAttributes]::ReparsePoint");
+        StringAssert.Contains(script, "Get-BytesHash $distributionRecordBytes");
+        StringAssert.DoesNotMatch(script, new Regex("::HashData\\(|::ToHexString\\(|TrimEndingDirectorySeparator", RegexOptions.CultureInvariant));
+    }
+
+    [TestMethod]
+    public void Signed_candidate_powershell_parsers_reject_noncanonical_manifest_and_distribution_record()
+    {
+        var legacy = new SandboxValidationInput(new string('a', 40), "0.1.0-beta.1", 1,
+            new DateTimeOffset(2026, 10, 8, 15, 41, 6, TimeSpan.Zero), "0.1.0",
+            new string('A', 64), new string('B', 64), Artifacts());
+        var manifest = Encoding.ASCII.GetString(SignedSandboxCandidateInputCodec.CreateCanonical(
+            new(legacy, new string('C', 64), new string('D', 64), MsiAuthenticodeInspectionResult.PolicyId)));
+        Assert.IsTrue(RunSignedParser("Read-CanonicalSandboxInput", manifest));
+        foreach (var altered in new[]
+        {
+            manifest.Replace("distribution-record-sha256=" + new string('D', 64), "distribution-record-sha256=BAD", StringComparison.Ordinal),
+            manifest.Replace("policy-id=" + MsiAuthenticodeInspectionResult.PolicyId, "policy-id=other", StringComparison.Ordinal),
+            manifest.Replace("artifact-count=", "extra=value\nartifact-count=", StringComparison.Ordinal),
+            manifest.Replace("desktop/Vantrel.Security.Desktop.exe", "../escape.exe", StringComparison.Ordinal),
+            manifest.Replace("\n", "\r\n", StringComparison.Ordinal)
+        }) Assert.IsFalse(RunSignedParser("Read-CanonicalSandboxInput", altered));
+        var lines = manifest.Split('\n');
+        (lines[12], lines[13]) = (lines[13], lines[12]);
+        Assert.IsFalse(RunSignedParser("Read-CanonicalSandboxInput", string.Join('\n', lines)));
+
+        var record = MsiDistributionRecordCodec.CreateCanonical(new("VantrelSecurity.msi", new string('A', 64),
+            new string('C', 64), new string('B', 64), MsiAuthenticodeInspectionResult.PolicyId,
+            NativeAuthenticodeTrustCategory.Success, PrimarySignatureCountPolicyCategory.ExactlyOne,
+            NativeDigestAlgorithmCategory.Sha256, TimestampPolicyCategory.ValidRfc3161,
+            AuthenticodeEkuPolicyCategory.Match));
+        var distribution = Encoding.ASCII.GetString(record);
+        Assert.IsTrue(RunSignedParser("Read-CanonicalDistributionRecord", distribution));
+        Assert.IsFalse(RunSignedParser("Read-CanonicalDistributionRecord", distribution.Replace("timestamp=ValidRfc3161", "timestamp=Missing", StringComparison.Ordinal)));
+        Assert.IsFalse(RunSignedParser("Read-CanonicalDistributionRecord", distribution.Replace("\n", "\r\n", StringComparison.Ordinal)));
+    }
+
+    private static bool RunSignedParser(string function, string value)
+    {
+        var script = File.ReadAllText(Path.Combine(RepositoryRoot(), "sandbox", "Validate-VantrelSignedCandidateSandbox.ps1"));
+        var beginning = script.IndexOf("function Assert-Condition", StringComparison.Ordinal);
+        var invocation = Regex.Match(script, "(?m)^Assert-SafeInputRoot\\s*$", RegexOptions.CultureInvariant);
+        Assert.IsTrue(beginning >= 0 && invocation.Success);
+        var definitions = script[beginning..invocation.Index];
+        var data = Convert.ToBase64String(Encoding.ASCII.GetBytes(value));
+        var command = definitions + "\n$script:synthetic=[Convert]::FromBase64String('" + data + "');" +
+            "function Read-SafeInputBytes([string]$Path) { return $script:synthetic };" +
+            "try { " + function + " $script:synthetic | Out-Null; exit 0 } catch { exit 1 }";
+        if (function == "Read-CanonicalSandboxInput")
+            command = definitions + "\n$script:synthetic=[Convert]::FromBase64String('" + data + "');" +
+                "function Read-SafeInputBytes([string]$Path) { return ,$script:synthetic };" +
+                "try { Read-CanonicalSandboxInput 'synthetic' | Out-Null; exit 0 } catch { exit 1 }";
+        var temporary = Path.Combine(Path.GetTempPath(), "vantrel-signed-parser-" + Guid.NewGuid().ToString("N") + ".ps1");
+        try
+        {
+            File.WriteAllText(temporary, command);
+            using var process = Process.Start(new ProcessStartInfo("powershell.exe")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                ArgumentList = { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", temporary }
+            })!;
+            process.StandardOutput.ReadToEnd();
+            process.StandardError.ReadToEnd();
+            Assert.IsTrue(process.WaitForExit(10000), "PowerShell parser did not finish.");
+            return process.ExitCode == 0;
+        }
+        finally { File.Delete(temporary); }
+    }
+
     [TestMethod]
     public void Sandbox_input_is_canonical_and_rejects_malformed_hash_and_extra_fields()
     {
