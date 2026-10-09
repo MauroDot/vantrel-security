@@ -5,11 +5,11 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Vantrel.Security.ReleaseLayoutTool;
 
-/// <summary>A path and its direct parent held without delete sharing for the entire operation.</summary>
+/// <summary>Retained file and parent identity checks; the parent handle is not a rename barrier.</summary>
 public sealed class MsiFileBinding : IDisposable
 {
-    private const uint Read = 0x80000000, Write = 0x40000000, ReadAttributes = 0x80;
-    private const uint OpenExisting = 3, CreateNew = 1, OpenReparse = 0x00200000, BackupSemantics = 0x02000000;
+    private const uint Read = 0x80000000, ReadAttributes = 0x80;
+    private const uint OpenExisting = 3, OpenReparse = 0x00200000, BackupSemantics = 0x02000000;
     private readonly SafeFileHandle _parent;
     private readonly string _parentPath;
     private readonly string _finalPath;
@@ -29,7 +29,7 @@ public sealed class MsiFileBinding : IDisposable
             throw new IOException("MSI file binding is unavailable.");
     }
 
-    public static MsiFileBinding Open(string path, bool createNew = false)
+    public static MsiFileBinding Open(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || path.Length < 3 || path[1] != ':' || path[2] != '\\' ||
             new DriveInfo(path[..3]).DriveType != DriveType.Fixed || !System.IO.Path.IsPathFullyQualified(path) ||
@@ -43,8 +43,7 @@ public sealed class MsiFileBinding : IDisposable
         if (parent.IsInvalid) { parent.Dispose(); throw new IOException("MSI file binding is unavailable."); }
         try
         {
-            var file = CreateFile(path, createNew ? Read | Write : Read,
-                (uint)(createNew ? FileShare.ReadWrite : FileShare.Read), IntPtr.Zero, createNew ? CreateNew : OpenExisting, OpenReparse, IntPtr.Zero);
+            var file = CreateFile(path, Read, (uint)FileShare.Read, IntPtr.Zero, OpenExisting, OpenReparse, IntPtr.Zero);
             if (file.IsInvalid) { file.Dispose(); throw new IOException("MSI file binding is unavailable."); }
             try { return new MsiFileBinding(path, parent, file); }
             catch { file.Dispose(); throw; }
@@ -79,21 +78,6 @@ public sealed class MsiFileBinding : IDisposable
         if (RandomAccess.GetLength(Handle) != length) throw new IOException("MSI file binding changed.");
         RequireUnchanged();
         return Convert.ToHexString(hash.GetHashAndReset());
-    }
-
-    public void CopyTo(MsiFileBinding destination)
-    {
-        var length = RandomAccess.GetLength(Handle); var buffer = new byte[65536]; long position = 0;
-        while (position < length)
-        {
-            var count = RandomAccess.Read(Handle, buffer.AsSpan(0, (int)Math.Min(buffer.Length, length - position)), position);
-            if (count <= 0) throw new IOException("MSI source changed.");
-            RandomAccess.Write(destination.Handle, buffer.AsSpan(0, count), position); position += count;
-        }
-        RandomAccess.FlushToDisk(destination.Handle);
-        if (RandomAccess.GetLength(Handle) != length || RandomAccess.GetLength(destination.Handle) != length)
-            throw new IOException("MSI source changed.");
-        RequireUnchanged(); destination.RequireUnchanged();
     }
 
     public void Dispose() { Handle.Dispose(); _parent.Dispose(); }

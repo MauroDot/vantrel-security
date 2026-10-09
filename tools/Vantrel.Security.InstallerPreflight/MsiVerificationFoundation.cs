@@ -1,4 +1,6 @@
 using System.Text;
+using System.Security.Cryptography;
+using Microsoft.Win32.SafeHandles;
 using Vantrel.Security.ReleaseLayoutTool;
 
 namespace Vantrel.Security.InstallerPreflight;
@@ -109,15 +111,40 @@ public sealed class InjectedMsiSigningOrchestrator(IMsiSigningRequest signing, I
         if (!_database.IsReadOnlyDatabase(source)) throw new IOException(Failure);
         var before = sourceBinding.Sha256();
         if (before != expectedUnsignedSha256) throw new IOException(Failure);
-        using var destinationBinding = MsiFileBinding.Open(destination, createNew: true);
-        sourceBinding.CopyTo(destinationBinding);
-        if (sourceBinding.Sha256() != before || destinationBinding.Sha256() != before) throw new IOException(Failure);
+        var sourceStorage = MsiCompoundStorage.ReadFromHandle(sourceBinding.Handle);
+        if (sourceStorage.WholeFileSha256 != before) throw new IOException(Failure);
+        var stagingPath = Path.GetDirectoryName(destination)!;
+        using var staging = MsiProtectedStaging.CreateNew(stagingPath);
+        FileIdentity createdIdentity;
+        using (var created = staging.CreateNewMsi(destination))
+        {
+            Copy(sourceBinding.Handle, created);
+            createdIdentity = staging.VerifyFile(destination, created);
+            if (Hash(created) != before || sourceBinding.Sha256() != before) throw new IOException(Failure);
+        }
+        using (var baseline = MsiFileBinding.Open(destination))
+        {
+            if (staging.VerifyFile(destination, baseline.Handle) != createdIdentity || baseline.Sha256() != before)
+                throw new IOException(Failure);
+            var copiedStorage = MsiCompoundStorage.ReadFromHandle(baseline.Handle);
+            if (copiedStorage.WholeFileSha256 != before ||
+                !sourceStorage.Entries.OrderBy(item => item.Key, StringComparer.Ordinal)
+                    .SequenceEqual(copiedStorage.Entries.OrderBy(item => item.Key, StringComparer.Ordinal)))
+                throw new IOException(Failure);
+        }
+        // Only the read-only leaf binding is released for the injected signing interval.
+        // The parent binding is retained for identity checks; it is not a rename barrier.
         bool signed;
         try { signed = signing.Sign(destination); }
         catch { throw new IOException(Failure); }
-        sourceBinding.RequireUnchanged(); destinationBinding.RequireUnchanged();
+        sourceBinding.RequireUnchanged();
         if (!signed || sourceBinding.Sha256() != before) throw new IOException(Failure);
+        using var destinationBinding = MsiFileBinding.Open(destination);
+        if (staging.VerifyFile(destination, destinationBinding.Handle) != createdIdentity) throw new IOException(Failure);
+        var signedStorage = MsiCompoundStorage.ReadFromHandle(destinationBinding.Handle);
+        MsiCompoundStorageComparer.RequireOnlySignatureChanges(sourceStorage, signedStorage);
         var verifiedBytes = destinationBinding.Sha256();
+        if (verifiedBytes != signedStorage.WholeFileSha256) throw new IOException(Failure);
         MsiAuthenticodeInspectionResult result;
         try { result = inspector.Inspect(destinationBinding); }
         catch { throw new IOException(Failure); }
@@ -128,6 +155,9 @@ public sealed class InjectedMsiSigningOrchestrator(IMsiSigningRequest signing, I
             throw new IOException(Failure);
         ValidatePlan(layout, installerPlanPath);
         destinationBinding.RequireUnchanged();
+        if (staging.VerifyFile(destination, destinationBinding.Handle) != createdIdentity ||
+            MsiCompoundStorage.ReadFromHandle(destinationBinding.Handle).WholeFileSha256 != verifiedBytes)
+            throw new IOException(Failure);
         return new(verifiedBytes, result);
     }
 
@@ -176,7 +206,8 @@ public sealed class InjectedMsiSigningOrchestrator(IMsiSigningRequest signing, I
     private static string SafeNewFile(string path)
     {
         var full = SafePath(path);
-        if (File.Exists(full) || Directory.Exists(full)) throw new IOException(Failure);
+        if (File.Exists(full) || Directory.Exists(full) ||
+            Directory.Exists(Path.GetDirectoryName(full)!) || File.Exists(Path.GetDirectoryName(full)!)) throw new IOException(Failure);
         return full;
     }
     private static string SafePath(string path)
@@ -185,11 +216,50 @@ public sealed class InjectedMsiSigningOrchestrator(IMsiSigningRequest signing, I
         {
             if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path) || Path.GetExtension(path) != ".msi" ||
                 !string.Equals(Path.GetFullPath(path), path, StringComparison.OrdinalIgnoreCase)) throw new IOException();
-            for (var parent = Directory.GetParent(path); parent is not null; parent = parent.Parent)
-                if (!parent.Exists || (parent.Attributes & FileAttributes.ReparsePoint) != 0) throw new IOException();
+            var immediate = Path.GetDirectoryName(path)!;
+            for (var parent = new DirectoryInfo(immediate); parent is not null; parent = parent.Parent)
+            {
+                if (!parent.Exists) { if (parent.FullName == immediate) continue; throw new IOException(); }
+                if ((parent.Attributes & FileAttributes.ReparsePoint) != 0) throw new IOException();
+            }
             return path;
         }
         catch { throw new IOException(Failure); }
     }
     private static bool IsHash(string? hash) => hash is { Length: 64 } && hash.All(c => c is >= '0' and <= '9' or >= 'A' and <= 'F');
+
+    private static void Copy(SafeFileHandle source, SafeFileHandle destination)
+    {
+        var length = RandomAccess.GetLength(source);
+        if (length is < 512 or > 512L * 1024 * 1024) throw new IOException(Failure);
+        var buffer = new byte[65536];
+        long offset = 0;
+        while (offset < length)
+        {
+            var count = RandomAccess.Read(source, buffer.AsSpan(0, (int)Math.Min(buffer.Length, length - offset)), offset);
+            if (count <= 0) throw new IOException(Failure);
+            RandomAccess.Write(destination, buffer.AsSpan(0, count), offset);
+            offset += count;
+        }
+        RandomAccess.FlushToDisk(destination);
+        if (RandomAccess.GetLength(source) != length || RandomAccess.GetLength(destination) != length)
+            throw new IOException(Failure);
+    }
+
+    private static string Hash(SafeFileHandle handle)
+    {
+        using var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var length = RandomAccess.GetLength(handle);
+        var buffer = new byte[65536];
+        long offset = 0;
+        while (offset < length)
+        {
+            var count = RandomAccess.Read(handle, buffer.AsSpan(0, (int)Math.Min(buffer.Length, length - offset)), offset);
+            if (count <= 0) throw new IOException(Failure);
+            digest.AppendData(buffer.AsSpan(0, count));
+            offset += count;
+        }
+        if (RandomAccess.GetLength(handle) != length) throw new IOException(Failure);
+        return Convert.ToHexString(digest.GetHashAndReset());
+    }
 }

@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using Vantrel.Security.ManifestTool;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -38,7 +40,7 @@ public sealed class MsiVerificationFoundationTests
     public void One_copy_one_injected_request_and_final_hash_binding()
     {
         using var scope = new Scope();
-        var signer = new Signer(path => AppendWithSharing(path, "signed"));
+        var signer = new Signer(path => File.WriteAllBytes(path, MsiCompoundFixture.Create(signatures: true, rootModified: 7)));
         var inspector = new Inspector(_ => GoodInspection());
         var result = NewOrchestrator(signer, inspector).CopySignAndInspect(scope.Layout, scope.Plan, scope.Source, scope.SourceHash, scope.Destination);
         Assert.AreEqual(1, signer.Calls);
@@ -56,6 +58,7 @@ public sealed class MsiVerificationFoundationTests
         var orchestrator = NewOrchestrator(signer, new Inspector(_ => GoodInspection()));
         Assert.ThrowsExactly<IOException>(() => orchestrator.CopySignAndInspect(scope.Layout, scope.Plan, scope.Source, new string('A', 64), scope.Destination));
         Assert.AreEqual(0, signer.Calls);
+        Directory.CreateDirectory(Path.GetDirectoryName(scope.Destination)!);
         System.IO.File.WriteAllText(scope.Destination, "existing");
         Assert.ThrowsExactly<IOException>(() => orchestrator.CopySignAndInspect(scope.Layout, scope.Plan, scope.Source, scope.SourceHash, scope.Destination));
         Assert.AreEqual(0, signer.Calls);
@@ -114,7 +117,44 @@ public sealed class MsiVerificationFoundationTests
     }
 
     [TestMethod]
-    public void Retained_source_and_destination_handles_block_replacement()
+    public void Final_inspection_retains_a_write_denying_handle()
+    {
+        using var scope = new Scope();
+        var blocked = false;
+        var signer = new Signer(path => File.WriteAllBytes(path, MsiCompoundFixture.Create(signatures: true)));
+        var inspector = new Inspector(path =>
+        {
+            try { using var writer = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite); }
+            catch (IOException) { blocked = true; }
+            return GoodInspection();
+        });
+        var result = NewOrchestrator(signer, inspector).CopySignAndInspect(
+            scope.Layout, scope.Plan, scope.Source, scope.SourceHash, scope.Destination);
+        Assert.IsTrue(blocked);
+        Assert.AreEqual(scope.Hash(scope.Destination), result.FinalMsiSha256);
+    }
+
+    [TestMethod]
+    public void Changed_staging_file_acl_fails_after_signing()
+    {
+        using var scope = new Scope();
+        var signer = new Signer(path =>
+        {
+            File.WriteAllBytes(path, MsiCompoundFixture.Create(signatures: true));
+            var info = new FileInfo(path);
+            var acl = info.GetAccessControl();
+            acl.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.WorldSid, null), FileSystemRights.ReadData,
+                AccessControlType.Allow));
+            info.SetAccessControl(acl);
+        });
+        Assert.ThrowsExactly<IOException>(() => NewOrchestrator(signer, new Inspector(_ => GoodInspection()))
+            .CopySignAndInspect(scope.Layout, scope.Plan, scope.Source, scope.SourceHash, scope.Destination));
+        Assert.AreEqual(1, signer.Calls);
+    }
+
+    [TestMethod]
+    public void Source_replacement_is_blocked_and_destination_replacement_is_detected()
     {
         foreach (var replaceSource in new[] { true, false })
         {
@@ -131,7 +171,7 @@ public sealed class MsiVerificationFoundationTests
     }
 
     [TestMethod]
-    public void Retained_destination_parent_blocks_substitution()
+    public void Parent_substitution_is_detected_without_claiming_a_rename_barrier()
     {
         using var scope = new Scope();
         var parent = Path.GetDirectoryName(scope.Destination)!;
@@ -182,6 +222,7 @@ public sealed class MsiVerificationFoundationTests
         using var scope = new Scope();
         var target = Path.Combine(scope.Root, "target.msi");
         System.IO.File.WriteAllText(target, "must remain unchanged");
+        Directory.CreateDirectory(Path.GetDirectoryName(scope.Destination)!);
         try { System.IO.File.CreateSymbolicLink(scope.Destination, target); }
         catch (Exception error) when (error.HResult == PrivilegeNotHeld) { Assert.Inconclusive("Symbolic-link privilege unavailable."); return; }
         var signer = new Signer(_ => { });
@@ -227,7 +268,7 @@ public sealed class MsiVerificationFoundationTests
     {
         internal string Root = Path.Combine(Path.GetTempPath(), "vantrel-msi-foundation-" + Guid.NewGuid().ToString("N"));
         internal string Source => Path.Combine(Root, "unsigned.msi");
-        internal string Destination => Path.Combine(Root, "signed.msi");
+        internal string Destination => Path.Combine(Root, "stage", "signed.msi");
         internal string Layout => Path.Combine(Root, "layout");
         internal string Plan => Path.Combine(Root, "vantrel-installer-input-v1.txt");
         internal string SourceHash => Hash(Source);
@@ -257,7 +298,7 @@ public sealed class MsiVerificationFoundationTests
             File.WriteAllBytes(Path.Combine(Layout, BetaReleaseLayoutValidator.RecordFileName), BetaReleaseRecordCodec.CreateCanonical(record));
             var plan = new InstallerInputValidator().CreatePlan(Layout, "0.1.0");
             File.WriteAllText(Plan, InstallerInputValidator.CreateCanonicalPlan(plan), new UTF8Encoding(false));
-            File.WriteAllBytes(Source, [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 1, 2, 3]);
+            File.WriteAllBytes(Source, MsiCompoundFixture.Create());
         }
         internal void Write(string relative, string content)
         {
