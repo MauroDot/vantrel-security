@@ -80,13 +80,30 @@ public sealed class InstallerInputValidator
     }
 
     public InstallerInputPlan CreatePlan(string releaseLayoutRoot, string msiProductVersion)
+        => CreatePlanCore(releaseLayoutRoot, msiProductVersion, null);
+
+    internal InstallerInputPlan CreatePlan(string releaseLayoutRoot, string msiProductVersion, BetaReleaseRecord record)
+        => CreatePlanCore(releaseLayoutRoot, msiProductVersion, record);
+
+    private InstallerInputPlan CreatePlanCore(string releaseLayoutRoot, string msiProductVersion, BetaReleaseRecord? suppliedRecord)
     {
         if (!MsiProductVersion.TryParse(msiProductVersion, out var msiVersion) || msiVersion is null)
             throw new IOException("MSI product version is invalid.");
         var root = RequireDirectory(releaseLayoutRoot);
         var recordPath = Path.Combine(root, BetaReleaseLayoutValidator.RecordFileName);
-        if (!BetaReleaseRecordCodec.TryParse(ReadFile(recordPath), out var record) || record is null)
-            throw new IOException("Completed release record is unavailable.");
+        BetaReleaseRecord record;
+        if (suppliedRecord is null)
+        {
+            if (!BetaReleaseRecordCodec.TryParse(ReadFile(recordPath), out var parsed) || parsed is null)
+                throw new IOException("Completed release record is unavailable.");
+            record = parsed;
+        }
+        else
+        {
+            if (!File.Exists(recordPath) || IsReparse(recordPath))
+                throw new IOException("Completed release record is unavailable.");
+            record = suppliedRecord;
+        }
         ValidateCompletedRecord(record);
         ValidateRootEntries(root);
         if (record.Artifacts.Select(artifact => artifact.RelativePath).Distinct(StringComparer.OrdinalIgnoreCase).Count() != record.Artifacts.Count)

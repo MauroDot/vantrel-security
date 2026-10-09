@@ -9,6 +9,8 @@ try
     else if (args.Length == 17 && args[0] == "write-sandbox-input" && args[1] == "--installer-plan" && args[3] == "--msi" && args[5] == "--output" &&
              args[7] == "--source-commit" && args[9] == "--release-version" && args[11] == "--release-sequence" && args[13] == "--published-at-utc" && args[15] == "--msi-product-version")
         SandboxValidationInputCodec.CreateAndWrite(args[2], args[4], args[6], args[8], args[10], args[12], args[14], args[16]);
+    else if (args.Length > 0 && args[0] == "sign-msi-distribution")
+        MsiDistributionCommand.ExecuteProduction(args);
     else
         throw new ArgumentException();
 }

@@ -264,7 +264,7 @@ public sealed class MsiVerificationFoundationTests
         public MsiAuthenticodeInspectionResult Inspect(MsiFileBinding binding)
         { Calls++; RetainedHandle = !binding.Handle.IsInvalid && !binding.Handle.IsClosed; binding.RequireUnchanged(); return inspect(binding.Path); }
     }
-    private sealed class Scope : IDisposable
+    internal sealed class Scope : IDisposable
     {
         internal string Root = Path.Combine(Path.GetTempPath(), "vantrel-msi-foundation-" + Guid.NewGuid().ToString("N"));
         internal string Source => Path.Combine(Root, "unsigned.msi");

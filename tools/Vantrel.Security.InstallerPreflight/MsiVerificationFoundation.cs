@@ -5,7 +5,7 @@ using Vantrel.Security.ReleaseLayoutTool;
 
 namespace Vantrel.Security.InstallerPreflight;
 
-/// <summary>Canonical public evidence only; no command in this task creates a distribution record.</summary>
+/// <summary>Canonical public MSI distribution evidence.</summary>
 public sealed record MsiDistributionRecord(string RelativeMsiFileName, string FinalMsiSha256,
     string ReleaseRecordSha256, string InstallerPlanSha256, string PolicyId,
     NativeAuthenticodeTrustCategory WinTrust, PrimarySignatureCountPolicyCategory PrimarySignatureCount,
@@ -14,6 +14,7 @@ public sealed record MsiDistributionRecord(string RelativeMsiFileName, string Fi
 public static class MsiDistributionRecordCodec
 {
     public const string Schema = "vantrel-msi-distribution-record-v1";
+    public const string FileName = "vantrel-msi-distribution-record-v1.txt";
     private static readonly UTF8Encoding Utf8 = new(false, true);
     private static readonly string[] Keys = ["schema", "msi-file", "final-msi-sha256", "release-record-sha256",
         "installer-plan-sha256", "policy-id", "wintrust", "primary-signature-count", "digest", "timestamp", "eku-category"];
@@ -70,7 +71,7 @@ public static class MsiDistributionRecordCodec
             throw new ArgumentException("MSI distribution evidence is unavailable.", nameof(value));
     }
 
-    private static bool IsSafeName(string? name) => name is { Length: > 4 and <= 128 } &&
+    internal static bool IsSafeName(string? name) => name is { Length: > 4 and <= 128 } &&
         name.EndsWith(".msi", StringComparison.Ordinal) && name[0] is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' &&
         name.All(c => c is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' or '.' or '-' or '_') &&
         !name.Contains("..", StringComparison.Ordinal);
@@ -78,7 +79,7 @@ public static class MsiDistributionRecordCodec
         value.All(c => c is >= '0' and <= '9' or >= 'A' and <= 'F');
 }
 
-/// <summary>Injected request only. There is no real signer or production command in this task.</summary>
+/// <summary>Injected signing request; the production adapter is private to the explicit CLI command.</summary>
 public interface IMsiSigningRequest { bool Sign(string singleMsiPath); }
 
 public sealed record MsiCopyInspectionResult(string FinalMsiSha256, MsiAuthenticodeInspectionResult Inspection);
@@ -90,18 +91,27 @@ public sealed class InjectedMsiSigningOrchestrator(IMsiSigningRequest signing, I
     private readonly IMsiDatabaseValidator _database = database ?? new WindowsMsiDatabaseValidator();
 
     public MsiCopyInspectionResult CopySignAndInspect(string releaseLayoutRoot, string installerPlanPath,
-        string unsignedMsiPath, string expectedUnsignedSha256, string signedMsiPath)
+        string unsignedMsiPath, string expectedUnsignedSha256, string signedMsiPath,
+        Action<MsiCopyInspectionResult>? onVerified = null)
+        => CopySignAndInspectBound(releaseLayoutRoot, installerPlanPath, unsignedMsiPath,
+            expectedUnsignedSha256, signedMsiPath, onVerified, null);
+
+    internal MsiCopyInspectionResult CopySignAndInspectBound(string releaseLayoutRoot, string installerPlanPath,
+        string unsignedMsiPath, string expectedUnsignedSha256, string signedMsiPath,
+        Action<MsiCopyInspectionResult>? onVerified, Action? validateCanonicalInputs)
     {
-        try { return CopySignAndInspectCore(releaseLayoutRoot, installerPlanPath, unsignedMsiPath, expectedUnsignedSha256, signedMsiPath); }
+        try { return CopySignAndInspectCore(releaseLayoutRoot, installerPlanPath, unsignedMsiPath, expectedUnsignedSha256, signedMsiPath, onVerified, validateCanonicalInputs); }
         catch { throw new IOException(Failure); }
     }
 
     private MsiCopyInspectionResult CopySignAndInspectCore(string releaseLayoutRoot, string installerPlanPath,
-        string unsignedMsiPath, string expectedUnsignedSha256, string signedMsiPath)
+        string unsignedMsiPath, string expectedUnsignedSha256, string signedMsiPath,
+        Action<MsiCopyInspectionResult>? onVerified, Action? validateCanonicalInputs)
     {
         if (!IsHash(expectedUnsignedSha256)) throw new IOException(Failure);
         var layout = SafeDirectory(releaseLayoutRoot);
-        ValidatePlan(layout, installerPlanPath);
+        if (validateCanonicalInputs is null) ValidatePlan(layout, installerPlanPath);
+        else validateCanonicalInputs();
         var source = SafeExistingFile(unsignedMsiPath);
         var destination = SafeNewFile(signedMsiPath);
         if (string.Equals(source, destination, StringComparison.OrdinalIgnoreCase) || IsWithin(layout, source) || IsWithin(layout, destination))
@@ -153,12 +163,15 @@ public sealed class InjectedMsiSigningOrchestrator(IMsiSigningRequest signing, I
             result.Digest != NativeDigestAlgorithmCategory.Sha256 || result.Timestamp != TimestampPolicyCategory.ValidRfc3161 ||
             result.EkuCategory != AuthenticodeEkuPolicyCategory.Match || destinationBinding.Sha256() != verifiedBytes || sourceBinding.Sha256() != before)
             throw new IOException(Failure);
-        ValidatePlan(layout, installerPlanPath);
+        if (validateCanonicalInputs is null) ValidatePlan(layout, installerPlanPath);
+        else validateCanonicalInputs();
         destinationBinding.RequireUnchanged();
         if (staging.VerifyFile(destination, destinationBinding.Handle) != createdIdentity ||
             MsiCompoundStorage.ReadFromHandle(destinationBinding.Handle).WholeFileSha256 != verifiedBytes)
             throw new IOException(Failure);
-        return new(verifiedBytes, result);
+        var approved = new MsiCopyInspectionResult(verifiedBytes, result);
+        onVerified?.Invoke(approved);
+        return approved;
     }
 
     private static void ValidatePlan(string layout, string planPath)
