@@ -42,8 +42,8 @@ public static class ServicePublishFileSnapshot
     private const long MaximumFileBytes = 1024L * 1024 * 1024;
     private const long MaximumPublishBytes = 4L * 1024 * 1024 * 1024;
     private const int MaximumDirectories = 512;
-    private const uint GenericRead = 0x80000000, ReadAttributes = 0x80;
-    private const uint ShareRead = 1, ShareReadWrite = 3, OpenExisting = 3;
+    private const uint GenericRead = 0x80000000, GenericWrite = 0x40000000, ReadAttributes = 0x80;
+    private const uint ShareRead = 1, ShareReadWrite = 3, CreateNewDisposition = 1, OpenExisting = 3;
     private const uint OpenReparsePoint = 0x00200000, BackupSemantics = 0x02000000;
     private const uint FileTypeDisk = 1;
     private const string PlaceholderHash = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -166,6 +166,93 @@ public static class ServicePublishFileSnapshot
         }
     }
 
+    /// <summary>
+    /// Copies one previously approved inventory entry from retained source handles to a
+    /// create-new destination. The caller must still validate the complete source and final
+    /// directory inventories: this method does not authorize either directory after it returns.
+    /// </summary>
+    internal static void CopyValidatedFile(string sourceRoot, TrustedManifestV2File validatedFile,
+        string destinationPath)
+    {
+        const string invalid = "Service projection file is unsafe.";
+        var retained = new List<BoundEntry>();
+        try
+        {
+            if (validatedFile is null) throw new IOException(invalid);
+            RequireCanonicalEntry(validatedFile);
+            var source = RequireRoot(sourceRoot);
+            var destination = RequireRoot(destinationPath);
+            if (!string.Equals(destination, destinationPath, StringComparison.Ordinal))
+                throw new IOException(invalid);
+            var destinationParent = Path.GetDirectoryName(destination);
+            if (destinationParent is null ||
+                destinationParent.Equals(source, StringComparison.OrdinalIgnoreCase) ||
+                destinationParent.StartsWith(source + "\\", StringComparison.OrdinalIgnoreCase))
+                throw new IOException(invalid);
+
+            RetainAncestors(source, retained);
+            var sourcePath = source;
+            var segments = validatedFile.Path.Split('/');
+            for (var index = 0; index < segments.Length - 1; index++)
+            {
+                sourcePath = Path.Combine(sourcePath, segments[index]);
+                retained.Add(BoundEntry.Open(sourcePath, expectDirectory: true));
+            }
+            sourcePath = Path.Combine(sourcePath, segments[^1]);
+            var sourceFile = BoundEntry.Open(sourcePath, expectDirectory: false,
+                relativePath: validatedFile.Path);
+            retained.Add(sourceFile);
+            RetainAncestors(destinationParent, retained);
+            foreach (var entry in retained) entry.RequireUnchanged();
+            if (Hash(sourceFile) != validatedFile.Sha256) throw new IOException(invalid);
+
+            var destinationFile = BoundEntry.CreateNew(destination);
+            retained.Add(destinationFile);
+            var length = RandomAccess.GetLength(sourceFile.Handle);
+            if (length < 0 || length > MaximumFileBytes) throw new IOException(invalid);
+            var buffer = new byte[65536];
+            long offset = 0;
+            while (offset < length)
+            {
+                var count = RandomAccess.Read(sourceFile.Handle,
+                    buffer.AsSpan(0, (int)Math.Min(buffer.Length, length - offset)), offset);
+                if (count <= 0) throw new IOException(invalid);
+                RandomAccess.Write(destinationFile.Handle, buffer.AsSpan(0, count), offset);
+                offset += count;
+            }
+            if (RandomAccess.GetLength(destinationFile.Handle) != length ||
+                Hash(sourceFile) != validatedFile.Sha256 ||
+                Hash(destinationFile, permitRetainedWriter: true) != validatedFile.Sha256)
+                throw new IOException(invalid);
+            foreach (var entry in retained)
+                entry.RequireUnchanged(permitRetainedWriter: ReferenceEquals(entry, destinationFile));
+        }
+        catch (Exception exception) when (exception is IOException or ArgumentException or
+            CryptographicException or UnauthorizedAccessException or NotSupportedException)
+        {
+            throw new IOException(invalid);
+        }
+        finally
+        {
+            for (var index = retained.Count - 1; index >= 0; index--) retained[index].Dispose();
+        }
+    }
+
+    private static void RequireCanonicalEntry(TrustedManifestV2File file)
+    {
+        try { _ = TrustedManifestV2Codec.CreateCanonicalPayload("0.0.0", 1, [file]); }
+        catch (ArgumentException) { throw new IOException("Service projection file is unsafe."); }
+    }
+
+    private static void RetainAncestors(string directory, List<BoundEntry> retained)
+    {
+        var ancestors = new Stack<string>();
+        for (var current = new DirectoryInfo(directory); current is not null; current = current.Parent)
+            ancestors.Push(current.FullName);
+        while (ancestors.Count != 0)
+            retained.Add(BoundEntry.Open(ancestors.Pop(), expectDirectory: true));
+    }
+
     private static string RequireRoot(string root)
     {
         try
@@ -210,7 +297,7 @@ public static class ServicePublishFileSnapshot
         return bytes;
     }
 
-    private static string Hash(BoundEntry file)
+    private static string Hash(BoundEntry file, bool permitRetainedWriter = false)
     {
         using var digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var length = RandomAccess.GetLength(file.Handle);
@@ -225,7 +312,7 @@ public static class ServicePublishFileSnapshot
             offset += count;
         }
         if (RandomAccess.GetLength(file.Handle) != length) throw new IOException("Service publish content changed.");
-        file.RequireUnchanged();
+        file.RequireUnchanged(permitRetainedWriter);
         return Convert.ToHexString(digest.GetHashAndReset());
     }
 
@@ -266,12 +353,21 @@ public static class ServicePublishFileSnapshot
             catch { handle.Dispose(); throw; }
         }
 
-        internal void RequireUnchanged()
+        internal static BoundEntry CreateNew(string path)
+        {
+            var handle = CreateFile(path, GenericRead | GenericWrite | ReadAttributes,
+                ShareRead, IntPtr.Zero, CreateNewDisposition, OpenReparsePoint, IntPtr.Zero);
+            if (handle.IsInvalid) { handle.Dispose(); throw new IOException("Service projection file is unavailable."); }
+            try { return new BoundEntry(path, string.Empty, isDirectory: false, handle); }
+            catch { handle.Dispose(); throw; }
+        }
+
+        internal void RequireUnchanged(bool permitRetainedWriter = false)
         {
             if (Handle.IsClosed || Inspect(Handle, _isDirectory) != (_identity, _finalPath))
                 throw new IOException("Service publish entry changed.");
             using var current = CreateFile(Path, ReadAttributes,
-                _isDirectory ? ShareReadWrite : ShareRead, IntPtr.Zero, OpenExisting,
+                _isDirectory || permitRetainedWriter ? ShareReadWrite : ShareRead, IntPtr.Zero, OpenExisting,
                 OpenReparsePoint | (_isDirectory ? BackupSemantics : 0), IntPtr.Zero);
             if (current.IsInvalid || Inspect(current, _isDirectory) != (_identity, _finalPath))
                 throw new IOException("Service publish entry changed.");
