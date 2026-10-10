@@ -84,4 +84,38 @@ public sealed class CanonicalReleaseVersionTests
         Assert.IsFalse(CanonicalReleaseVersion.IsValid(version));
         Assert.ThrowsException<ArgumentException>(() => CanonicalReleaseVersion.Resolve(version));
     }
+
+    [TestMethod]
+    public void V2_producer_and_manifest_tool_agree_on_canonical_release_version_corpus()
+    {
+        var files = new[] { new TrustedManifestV2File("Vantrel.Security.Service.exe", new string('A', 64)) };
+        var versions = new[]
+        {
+            "0.1.0", "1.2.3-beta.1", "18446744073709551616.0.0", new string('1', 60) + ".0.0",
+            "", "01.0.0", "0.00.0", "0.0.", "0.0.0+meta", "0.0.0-", "0.0.0-a..b",
+            "0.0.0-a_b", "0.0.0-ä", " 0.0.0", "0.0.0 ", "0.0.0\r",
+            new string('1', 61) + ".0.0"
+        };
+        foreach (var version in versions)
+        {
+            var toolAccepts = CanonicalReleaseVersion.IsValid(version);
+            var coreAccepts = true;
+            try { TrustedManifestV2Codec.CreateCanonicalPayload(version, 1, files); }
+            catch (ArgumentException) { coreAccepts = false; }
+            Assert.AreEqual(toolAccepts, coreAccepts, $"Version-contract drift for {Convert.ToHexString(Encoding.UTF8.GetBytes(version))}.");
+        }
+    }
+
+    [TestMethod]
+    public void Legacy_build_tool_terminal_newline_exception_is_explicit_and_v2_remains_strict()
+    {
+        const string invalid = "0.1.0\n";
+        Assert.IsTrue(CanonicalReleaseVersion.IsValid(invalid));
+        Assert.ThrowsException<ArgumentException>(() => TrustedManifestV2Codec.CreateCanonicalPayload(invalid, 1,
+            [new TrustedManifestV2File("Vantrel.Security.Service.exe", new string('A', 64))]));
+        // The unchanged v1 manifest writer still rejects whitespace before it can sign.
+        var hashes = Enum.GetValues<TrustedManifestComponent>()
+            .ToDictionary(component => component, _ => new string('A', 64));
+        Assert.ThrowsException<ArgumentException>(() => TrustedManifestCodec.CreateCanonicalPayload(invalid, hashes));
+    }
 }

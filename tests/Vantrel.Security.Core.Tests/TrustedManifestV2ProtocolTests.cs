@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -98,6 +99,16 @@ public sealed class TrustedManifestV2ProtocolTests
     }
 
     [TestMethod]
+    public void Creator_snapshots_each_producer_entry_once_before_validation_and_serialization()
+    {
+        var source = new ChangingInventory(Files);
+        var canonical = TrustedManifestV2Codec.CreateCanonicalPayload(Release, Sequence, source);
+
+        CollectionAssert.AreEqual(TrustedManifestV2Codec.CreateCanonicalPayload(Release, Sequence, Files), canonical);
+        CollectionAssert.AreEqual(Enumerable.Repeat(1, Files.Length).ToArray(), source.ReadCounts);
+    }
+
+    [TestMethod]
     public void Parsed_v2_signature_rejects_wrong_key_and_changed_authorized_hash()
     {
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -112,6 +123,32 @@ public sealed class TrustedManifestV2ProtocolTests
         Assert.IsTrue(TrustedManifestV2Codec.TryParse(changed, out var changedManifest, out _));
         Assert.IsFalse(TrustedManifestV2Codec.Verify(changedManifest!, key.ExportSubjectPublicKeyInfo()));
         Assert.IsFalse(TrustedManifestV2Codec.MatchesInventory(changedManifest!, Inventory()));
+    }
+
+    [TestMethod]
+    public void Verification_rejects_malformed_der_and_wrong_curve_keys()
+    {
+        using var p256 = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var p384 = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+        var valid = TrustedManifestV2Codec.CreateFile(Release, Sequence, Files, p256);
+        Assert.IsTrue(TrustedManifestV2Codec.TryParse(valid, out var parsed, out _));
+        Assert.IsNotNull(parsed);
+        Assert.IsFalse(TrustedManifestV2Codec.Verify(parsed, p384.ExportSubjectPublicKeyInfo()));
+        Assert.ThrowsException<ArgumentException>(() => TrustedManifestV2Codec.CreateFile(Release, Sequence, Files, p384));
+
+        var canonical = TrustedManifestV2Codec.CreateCanonicalPayload(Release, Sequence, Files);
+        foreach (var malformedDer in new[]
+        {
+            new byte[] { 0x01, 0x01, 0x00 }, // Not an ASN.1 sequence.
+            new byte[] { 0x30, 0x03, 0x02, 0x01 } // Truncated DER sequence.
+        })
+        {
+            var malformedFile = Encoding.ASCII.GetBytes(Encoding.ASCII.GetString(canonical) +
+                "signature=" + Convert.ToBase64String(malformedDer) + "\n");
+            Assert.IsTrue(TrustedManifestV2Codec.TryParse(malformedFile, out var malformed, out _));
+            Assert.IsNotNull(malformed);
+            Assert.IsFalse(TrustedManifestV2Codec.Verify(malformed, p256.ExportSubjectPublicKeyInfo()));
+        }
     }
 
     [TestMethod]
@@ -285,5 +322,27 @@ public sealed class TrustedManifestV2ProtocolTests
         var text = Encoding.ASCII.GetString(source);
         Assert.IsTrue(text.Contains(oldValue, StringComparison.Ordinal));
         return Encoding.ASCII.GetBytes(text.Replace(oldValue, newValue, StringComparison.Ordinal));
+    }
+
+    private sealed class ChangingInventory(IReadOnlyList<TrustedManifestV2File> source) : IReadOnlyList<TrustedManifestV2File>
+    {
+        public int[] ReadCounts { get; } = new int[source.Count];
+        public int Count => source.Count;
+
+        public TrustedManifestV2File this[int index]
+        {
+            get
+            {
+                ReadCounts[index]++;
+                return ReadCounts[index] == 1 ? source[index] : new(source[index].Path, "invalid hash");
+            }
+        }
+
+        public IEnumerator<TrustedManifestV2File> GetEnumerator()
+        {
+            for (var i = 0; i < Count; i++) yield return this[i];
+        }
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 }

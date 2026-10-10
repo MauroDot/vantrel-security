@@ -67,7 +67,15 @@ public static class TrustedManifestV2Codec
         if (releaseSequence == 0)
             throw new ArgumentOutOfRangeException(nameof(releaseSequence));
         ArgumentNullException.ThrowIfNull(files);
-        if (!IsCanonicalInventory(files))
+        var fileCount = files.Count;
+        if (fileCount is < 1 or > MaximumFiles)
+            throw new ArgumentException("Service inventory is not canonical.", nameof(files));
+        // Read each producer entry once. Validation and serialization must observe the same
+        // bounded inventory even when the caller's IReadOnlyList changes after this point.
+        var snapshot = new TrustedManifestV2File[fileCount];
+        for (var i = 0; i < snapshot.Length; i++)
+            snapshot[i] = files[i];
+        if (!IsCanonicalInventory(snapshot))
             throw new ArgumentException("Service inventory is not canonical.", nameof(files));
 
         var text = new StringBuilder()
@@ -76,8 +84,8 @@ public static class TrustedManifestV2Codec
             .Append("release-sequence=").Append(releaseSequence.ToString(CultureInfo.InvariantCulture)).Append('\n')
             .Append("architecture=").Append(Architecture).Append('\n')
             .Append("deployment=").Append(Deployment).Append('\n')
-            .Append("file-count=").Append(files.Count.ToString(CultureInfo.InvariantCulture)).Append('\n');
-        foreach (var file in files)
+            .Append("file-count=").Append(snapshot.Length.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        foreach (var file in snapshot)
             text.Append("file=").Append(file.Path).Append('|').Append(file.Sha256).Append('\n');
         var bytes = Ascii.GetBytes(text.ToString());
         // Leave room for the bounded DER signature and its canonical Base64 line.
