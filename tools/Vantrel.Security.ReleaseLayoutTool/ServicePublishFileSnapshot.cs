@@ -43,6 +43,7 @@ public static class ServicePublishFileSnapshot
     private const long MaximumPublishBytes = 4L * 1024 * 1024 * 1024;
     private const int MaximumDirectories = 512;
     private const uint GenericRead = 0x80000000, GenericWrite = 0x40000000, ReadAttributes = 0x80;
+    private const uint ReadControl = 0x00020000, WriteDac = 0x00040000, WriteOwner = 0x00080000;
     private const uint ShareRead = 1, ShareReadWrite = 3, CreateNewDisposition = 1, OpenExisting = 3;
     private const uint OpenReparsePoint = 0x00200000, BackupSemantics = 0x02000000;
     private const uint FileTypeDisk = 1;
@@ -50,6 +51,7 @@ public static class ServicePublishFileSnapshot
 
     public static ServicePublishSnapshot Capture(string root)
     {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
         var fullRoot = RequireRoot(root);
         var retained = new List<BoundEntry>();
         try
@@ -115,6 +117,7 @@ public static class ServicePublishFileSnapshot
             foreach (var file in files)
             {
                 file.RequireUnchanged();
+                ServiceReleaseV2FileSystemSecurity.RequireNoNamedStreams(file.Handle);
                 var length = RandomAccess.GetLength(file.Handle);
                 if (length < 0 || length > MaximumFileBytes || length > MaximumPublishBytes - totalBytes)
                     throw new IOException("Service publish content is oversized.");
@@ -151,8 +154,11 @@ public static class ServicePublishFileSnapshot
             }
             foreach (var entry in retained) entry.RequireUnchanged();
             for (var index = 0; index < files.Count; index++)
+            {
+                ServiceReleaseV2FileSystemSecurity.RequireNoNamedStreams(files[index].Handle);
                 if (!string.Equals(Hash(files[index]), inventory[index].Sha256, StringComparison.Ordinal))
                     throw new IOException("Service publish content changed during inspection.");
+            }
             return new ServicePublishSnapshot(inventory, depsBytes, runtimeConfigBytes);
         }
         catch (Exception exception) when (exception is IOException or ArgumentException or
@@ -174,6 +180,7 @@ public static class ServicePublishFileSnapshot
     internal static void CopyValidatedFile(string sourceRoot, TrustedManifestV2File validatedFile,
         string destinationPath)
     {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
         const string invalid = "Service projection file is unsafe.";
         var retained = new List<BoundEntry>();
         try
@@ -202,12 +209,14 @@ public static class ServicePublishFileSnapshot
             var sourceFile = BoundEntry.Open(sourcePath, expectDirectory: false,
                 relativePath: validatedFile.Path);
             retained.Add(sourceFile);
+            ServiceReleaseV2FileSystemSecurity.RequireNoNamedStreams(sourceFile.Handle);
             RetainAncestors(destinationParent, retained);
             foreach (var entry in retained) entry.RequireUnchanged();
             if (Hash(sourceFile) != validatedFile.Sha256) throw new IOException(invalid);
 
             var destinationFile = BoundEntry.CreateNew(destination);
             retained.Add(destinationFile);
+            ServiceReleaseV2FileSystemSecurity.ProtectFile(destinationFile.Handle);
             var length = RandomAccess.GetLength(sourceFile.Handle);
             if (length < 0 || length > MaximumFileBytes) throw new IOException(invalid);
             var buffer = new byte[65536];
@@ -224,6 +233,8 @@ public static class ServicePublishFileSnapshot
                 Hash(sourceFile) != validatedFile.Sha256 ||
                 Hash(destinationFile, permitRetainedWriter: true) != validatedFile.Sha256)
                 throw new IOException(invalid);
+            ServiceReleaseV2FileSystemSecurity.RequireNoNamedStreams(sourceFile.Handle);
+            ServiceReleaseV2FileSystemSecurity.RequireNoNamedStreams(destinationFile.Handle);
             foreach (var entry in retained)
                 entry.RequireUnchanged(permitRetainedWriter: ReferenceEquals(entry, destinationFile));
         }
@@ -355,7 +366,8 @@ public static class ServicePublishFileSnapshot
 
         internal static BoundEntry CreateNew(string path)
         {
-            var handle = CreateFile(path, GenericRead | GenericWrite | ReadAttributes,
+            var handle = CreateFile(path, GenericRead | GenericWrite | ReadAttributes |
+                ReadControl | WriteDac | WriteOwner,
                 ShareRead, IntPtr.Zero, CreateNewDisposition, OpenReparsePoint, IntPtr.Zero);
             if (handle.IsInvalid) { handle.Dispose(); throw new IOException("Service projection file is unavailable."); }
             try { return new BoundEntry(path, string.Empty, isDirectory: false, handle); }
