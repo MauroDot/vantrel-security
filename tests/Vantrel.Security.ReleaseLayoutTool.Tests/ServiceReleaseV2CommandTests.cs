@@ -43,6 +43,42 @@ public sealed class ServiceReleaseV2CommandTests
         Reject(args);
     }
 
+    [TestMethod]
+    public void V2_sidecar_verbs_require_exactly_four_options_and_absolute_paths_before_processes()
+    {
+        foreach (var verb in new[] { "sign-v2-service-manifest", "sign-v2-release-metadata" })
+        {
+            string[] validShape = [verb, "--source-root", "C:\\source",
+                "--source-commit", new string('a', 40), "--output-root", "C:\\release",
+                "--private-key", "C:\\external\\signing.pk8"];
+
+            for (var optionIndex = 1; optionIndex < validShape.Length; optionIndex += 2)
+                Reject(validShape.Where((_, index) => index != optionIndex &&
+                    index != optionIndex + 1).ToArray());
+            Reject(validShape[..^1]);
+            Reject([.. validShape, "--unexpected", "value"]);
+            Reject([.. validShape, "--private-key", "C:\\other.pk8"]);
+
+            foreach (var pathIndex in new[] { 2, 6, 8 })
+            {
+                var relativePath = validShape.ToArray();
+                relativePath[pathIndex] = "relative";
+                Reject(relativePath);
+            }
+        }
+    }
+
+    [TestMethod]
+    public void Existing_v1_record_command_retains_strict_argument_parsing()
+    {
+        Reject(["record", "--output-root", "C:\\release"]);
+        Reject(["record", "--output-root", "C:\\release", "--signing-profile"]);
+        Reject(["record", "--output-root", "C:\\release", "--signing-profile",
+            "vantrel-production", "--unexpected", "value"]);
+        Reject(["record", "--output-root", "C:\\release", "--signing-profile",
+            "vantrel-production", "--output-root", "C:\\other"]);
+    }
+
     private static void Reject(string[] args)
     {
         var signer = new ForbiddenSigner();

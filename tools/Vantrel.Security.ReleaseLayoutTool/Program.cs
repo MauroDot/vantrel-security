@@ -1,34 +1,57 @@
 using System.Globalization;
+using Vantrel.Security.Core;
 using Vantrel.Security.ReleaseLayoutTool;
 
-try
-{
-    ReleaseLayoutToolCommand.Execute(args, new SignToolProcessRunner(), Console.Out);
-}
-catch (TrackedSourceProvenanceException error)
-{
-    Console.Error.WriteLine(error.Message);
-    Environment.ExitCode = 1;
-}
-catch
-{
-    Console.Error.WriteLine("Beta release layout operation failed.");
-    Environment.ExitCode = 1;
-}
+Environment.ExitCode = ReleaseLayoutToolCommand.Run(args, new SignToolProcessRunner(),
+    Console.Out, Console.Error);
 
 public static class ReleaseLayoutToolCommand
 {
+    internal static int Run(string[] args, IAzureArtifactSigningProcessRunner signingRunner,
+        TextWriter output, TextWriter error) =>
+        RunCore(args, signingRunner, output, error, null, null);
+
+    internal static int RunForV2Tests(string[] args, IAzureArtifactSigningProcessRunner signingRunner,
+        TextWriter output, TextWriter error, IReleaseV2CommandRunner v2BuildRunner,
+        Func<string, string, string, (ServiceReleaseV2BuildProvenance, ServiceReleaseV2SidecarProducer)>
+            sidecarFactory) =>
+        RunCore(args, signingRunner, output, error, v2BuildRunner, sidecarFactory);
+
+    private static int RunCore(string[] args, IAzureArtifactSigningProcessRunner signingRunner,
+        TextWriter output, TextWriter error, IReleaseV2CommandRunner? v2BuildRunner,
+        Func<string, string, string, (ServiceReleaseV2BuildProvenance, ServiceReleaseV2SidecarProducer)>?
+            sidecarFactory)
+    {
+        try
+        {
+            ExecuteCore(args, signingRunner, output, null, v2BuildRunner, sidecarFactory);
+            return 0;
+        }
+        catch (TrackedSourceProvenanceException failure)
+        {
+            error.WriteLine(failure.Message);
+            return 1;
+        }
+        catch
+        {
+            error.WriteLine("Beta release layout operation failed.");
+            return 1;
+        }
+    }
+
     public static void Execute(string[] args, IAzureArtifactSigningProcessRunner signingRunner, TextWriter output,
         IReleaseAuthenticodeVerification? authenticode = null) =>
-        ExecuteCore(args, signingRunner, output, authenticode, null);
+        ExecuteCore(args, signingRunner, output, authenticode, null, null);
 
     internal static void ExecuteForV2Tests(string[] args, IAzureArtifactSigningProcessRunner signingRunner,
         TextWriter output, IReleaseV2CommandRunner v2BuildRunner) =>
-        ExecuteCore(args, signingRunner, output, null, v2BuildRunner);
+        ExecuteCore(args, signingRunner, output, null, v2BuildRunner, null);
 
     private static void ExecuteCore(string[] args, IAzureArtifactSigningProcessRunner signingRunner,
         TextWriter output, IReleaseAuthenticodeVerification? authenticode,
-        IReleaseV2CommandRunner? v2BuildRunner)
+        IReleaseV2CommandRunner? v2BuildRunner,
+        Func<string, string, string, (ServiceReleaseV2BuildProvenance, ServiceReleaseV2SidecarProducer)>?
+            sidecarFactory)
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(signingRunner);
@@ -93,7 +116,7 @@ public static class ReleaseLayoutToolCommand
                 ExplicitAbsolutePath(values, "--release-notes"),
                 Required(values, "--release-version"), sequence, published,
                 v2BuildRunner ?? new SystemReleaseV2CommandRunner());
-            output.WriteLine("V2 Service preparation completed. Sign only the four Vantrel-owned Service PEs, then externally sign the v2 trusted manifest and bound release metadata before record-v2-service.");
+            output.WriteLine("V2 Service preparation completed. Sign and verify the four owned PEs before explicitly producing the v2 manifest and release metadata sidecars.");
         }
         else if (command == "sign-v2-service-pes")
         {
@@ -107,7 +130,44 @@ public static class ReleaseLayoutToolCommand
                     ExplicitAbsolutePath(values, "--dlib"),
                     ExplicitAbsolutePath(values, "--metadata")),
                 v2BuildRunner ?? new SystemReleaseV2CommandRunner());
-            output.WriteLine("Four Service PE signatures validated. Externally sign the final v2 manifest and release metadata before record-v2-service.");
+            output.WriteLine("Four Service PE signatures validated. Use the explicit v2 manifest and metadata sidecar commands before record-v2-service.");
+        }
+        else if (command is "sign-v2-service-manifest" or "sign-v2-release-metadata")
+        {
+            if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+            RequireExactKeys(values, "--source-root", "--source-commit", "--output-root", "--private-key");
+            var sourceRoot = ExplicitAbsolutePath(values, "--source-root");
+            var sourceCommit = Required(values, "--source-commit");
+            var outputRoot = ExplicitAbsolutePath(values, "--output-root");
+            var privateKey = ExplicitAbsolutePath(values, "--private-key");
+            ServiceReleaseV2BuildProvenance provenance;
+            ServiceReleaseV2SidecarProducer producer;
+            if (sidecarFactory is null)
+            {
+                var runner = v2BuildRunner ?? new SystemReleaseV2CommandRunner();
+                provenance = ServiceReleaseV2BuildProvenancePreflight.VerifyAndRestore(
+                    sourceRoot, sourceCommit, runner);
+                producer = new ServiceReleaseV2SidecarProducer(
+                    new ProductionServiceReleaseV2SourceBinding(sourceRoot, sourceCommit, runner),
+                    new ProductionServiceReleaseV2AuthenticodeGate(),
+                    new ProtectedExternalV2PrivateKeyProvider(sourceRoot, outputRoot),
+                    OfflineReleasePublicKeys.TrustedManifestSubjectPublicKeyInfo,
+                    OfflineReleasePublicKeys.ReleaseMetadataSubjectPublicKeyInfo);
+            }
+            else
+                (provenance, producer) = sidecarFactory(sourceRoot, sourceCommit, outputRoot);
+            if (command == "sign-v2-service-manifest")
+            {
+                _ = producer.SignManifest(outputRoot, provenance, privateKey);
+                WritePostPublicationGuidance(output,
+                    "V2 Service manifest signature and final inventory verified. Use a separate clean source checkout to sign bound release metadata.");
+            }
+            else
+            {
+                _ = producer.SignMetadata(outputRoot, provenance, privateKey);
+                WritePostPublicationGuidance(output,
+                    "V2 release metadata signature and full signed-manifest binding verified. Invoke record-v2-service separately from a clean source checkout.");
+            }
         }
         else if (command == "record-v2-service")
         {
@@ -161,5 +221,12 @@ public static class ReleaseLayoutToolCommand
     private static void RequireExactKeys(IReadOnlyDictionary<string, string> values, params string[] expected)
     {
         if (values.Count != expected.Length || expected.Any(key => !values.ContainsKey(key))) throw new ArgumentException();
+    }
+
+    private static void WritePostPublicationGuidance(TextWriter output, string message)
+    {
+        // The final no-overwrite move has committed a verified sidecar. Console failure is
+        // not a signing failure and must not turn that committed operation into a nonzero exit.
+        try { output.WriteLine(message); } catch { }
     }
 }
