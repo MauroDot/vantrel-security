@@ -22,16 +22,18 @@ public sealed class ReleaseProvenanceSource
     private readonly Func<CancellationToken, CancellationTokenSource> _deadlineSource;
     private readonly TrustedManifestIntegritySource _manifestSource;
     private readonly ReleasePolicyStore _policyStore;
+    private readonly Func<byte[]> _metadataPublicKey;
 
     public ReleaseProvenanceSource(TrustedManifestIntegritySource manifestSource, ReleasePolicyStore policyStore)
         : this(new NativeComponentInspectionHandleOperations(), IsInstalledScmService, DeriveMetadata, DeadlineSource, manifestSource, policyStore) { }
 
     internal ReleaseProvenanceSource(IComponentInspectionHandleOperations operations, Func<bool> isEligible,
         Func<ComponentInspectionTargetIdentity> deriveMetadata, Func<CancellationToken, CancellationTokenSource>? deadlineSource,
-        TrustedManifestIntegritySource manifestSource, ReleasePolicyStore policyStore)
+        TrustedManifestIntegritySource manifestSource, ReleasePolicyStore policyStore, Func<byte[]>? metadataPublicKey = null)
     {
         _operations = operations; _isEligible = isEligible; _deriveMetadata = deriveMetadata; _deadlineSource = deadlineSource ?? DeadlineSource;
         _manifestSource = manifestSource; _policyStore = policyStore;
+        _metadataPublicKey = metadataPublicKey ?? (() => ReleaseMetadataPublicKey.SubjectPublicKeyInfo);
     }
 
     public async Task<ReleaseProvenanceSnapshot> CollectAsync(CancellationToken cancellationToken)
@@ -44,7 +46,7 @@ public sealed class ReleaseProvenanceSource
             var bytes = await ReadFixedMetadataAsync(cancellationToken);
             if (!ReleaseMetadataCodec.TryParse(bytes, out var metadata, out var parseFailure))
                 return ParseFailure(sampled, parseFailure);
-            if (!ReleaseMetadataCodec.Verify(metadata!, ReleaseMetadataPublicKey.SubjectPublicKeyInfo))
+            if (!ReleaseMetadataCodec.Verify(metadata!, _metadataPublicKey()))
                 return Result(sampled, ReleaseMetadataSignatureState.SignatureInvalid, ReleaseManifestBindingState.ManifestUnavailable, ReleasePolicyDecision.PolicyUnavailable);
 
             var manifestBytes = await _manifestSource.ReadManifestForReleaseProvenanceAsync(cancellationToken);
@@ -63,11 +65,27 @@ public sealed class ReleaseProvenanceSource
                 return Result(sampled, ReleaseMetadataSignatureState.Valid, ReleaseManifestBindingState.ManifestUnavailable, ReleasePolicyDecision.PolicyUnavailable, metadata);
             if (!string.Equals(metadata.ManifestSha256, trusted.ManifestSha256, StringComparison.Ordinal))
                 return Result(sampled, ReleaseMetadataSignatureState.Valid, ReleaseManifestBindingState.ManifestMismatch, ReleasePolicyDecision.PolicyUnavailable, metadata);
+            if (trusted.Identity?.Generation == ReleaseGeneration.V2 &&
+                trusted.MetadataSha256 != Convert.ToHexString(SHA256.HashData(bytes)))
+                return Result(sampled, ReleaseMetadataSignatureState.Valid, ReleaseManifestBindingState.ManifestMismatch,
+                    ReleasePolicyDecision.PolicyUnavailable, metadata);
 
-            var verified = VerifiedRelease.AfterFullVerification(metadata);
-            var decision = metadata.ReleaseSequence == 1
-                ? await _policyStore.BootstrapVerifiedSequenceOneAsync(verified, cancellationToken)
-                : await _policyStore.EvaluateVerifiedAsync(verified, cancellationToken);
+            ReleasePolicyDecision decision;
+            if (trusted.Identity?.Generation == ReleaseGeneration.V2)
+            {
+                var installed = AuthenticatedInstalledRelease.FromVerifiedObservation(trusted, metadata, _metadataPublicKey());
+                if (installed is null)
+                    return Result(sampled, ReleaseMetadataSignatureState.Valid, ReleaseManifestBindingState.ManifestInvalid,
+                        ReleasePolicyDecision.PolicyUnavailable, metadata);
+                decision = await _policyStore.BootstrapAuthenticatedV2Async(installed, cancellationToken);
+            }
+            else
+            {
+                var verified = VerifiedRelease.AfterFullVerification(metadata);
+                decision = metadata.ReleaseSequence == 1
+                    ? await _policyStore.BootstrapVerifiedSequenceOneAsync(verified, cancellationToken)
+                    : await _policyStore.EvaluateVerifiedAsync(verified, cancellationToken);
+            }
             return Result(sampled, ReleaseMetadataSignatureState.Valid, ReleaseManifestBindingState.Bound, decision, metadata);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }

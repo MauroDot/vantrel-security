@@ -284,6 +284,7 @@ public static class StatusProtocol
     }
 
     public const string TrustedManifestIntegrityPolicyRevision = "trusted-manifest-integrity-v1";
+    public const string TrustedManifestIntegrityPolicyRevisionV2 = "trusted-manifest-integrity-v2";
     public static bool TryReadTrustedManifestIntegrityResponse(ReadOnlySpan<byte> utf8, out TrustedManifestIntegritySnapshot? integrity, out StatusResponseFailure failure)
     {
         integrity = null; failure = utf8.Length switch { 0 => StatusResponseFailure.Empty, > MaximumMessageBytes => StatusResponseFailure.Oversized, _ => StatusResponseFailure.None };
@@ -294,10 +295,20 @@ public static class StatusProtocol
             if (response is null || value is null) { failure = StatusResponseFailure.MalformedJson; return false; }
             if (response.ProtocolVersion != Version) { failure = StatusResponseFailure.UnsupportedVersion; return false; }
             if (response.Type != "trusted_manifest_integrity") { failure = StatusResponseFailure.UnexpectedType; return false; }
+            var isV2 = value.PolicyRevision == TrustedManifestIntegrityPolicyRevisionV2;
             var valid = value.SignatureState == TrustedManifestSignatureState.Valid;
-            var comparison = value.Evaluation is TrustedManifestInstallationEvaluation.AllMatch or TrustedManifestInstallationEvaluation.ComponentMismatch;
+            var comparison = value.Evaluation is TrustedManifestInstallationEvaluation.AllMatch or TrustedManifestInstallationEvaluation.ComponentMismatch ||
+                (isV2 && valid && value.Evaluation is TrustedManifestInstallationEvaluation.ObservationUnavailable or TrustedManifestInstallationEvaluation.ManifestInvalid);
             var permitsReason = value.Evaluation is TrustedManifestInstallationEvaluation.ObservationUnavailable or TrustedManifestInstallationEvaluation.ManifestUnavailable;
-            if (!HasExactTrustedManifestIntegrityShape(utf8) || value.SampledAtUtc == default || value.SampledAtUtc.Offset != TimeSpan.Zero || value.SampledAtUtc > DateTimeOffset.UtcNow.AddMinutes(1) || value.PolicyRevision != TrustedManifestIntegrityPolicyRevision || !Enum.IsDefined(value.SignatureState) || !Enum.IsDefined(value.Evaluation) || (comparison != valid) || (value.Evaluation == TrustedManifestInstallationEvaluation.ComponentMismatch) != (value.MismatchedComponent is not null) || (value.MismatchedComponent is { } component && !Enum.IsDefined(component)) || (!permitsReason && value.ObservationReason is not null) || (value.ObservationReason is { } reason && (!Enum.IsDefined(reason) || reason == ComponentInspectionReason.None))) { failure = StatusResponseFailure.InvalidTrustedManifestIntegrity; return false; }
+            if (!HasExactTrustedManifestIntegrityShape(utf8) || value.SampledAtUtc == default || value.SampledAtUtc.Offset != TimeSpan.Zero || value.SampledAtUtc > DateTimeOffset.UtcNow.AddMinutes(1) ||
+                value.PolicyRevision is not (TrustedManifestIntegrityPolicyRevision or TrustedManifestIntegrityPolicyRevisionV2) ||
+                !Enum.IsDefined(value.SignatureState) || !Enum.IsDefined(value.Evaluation) || (comparison != valid) ||
+                (value.Evaluation == TrustedManifestInstallationEvaluation.ComponentMismatch) != (value.MismatchedComponent is not null) ||
+                (value.MismatchedComponent is { } component && (!Enum.IsDefined(component) ||
+                    (isV2 ? component != TrustedManifestComponent.RuntimeInventory : component == TrustedManifestComponent.RuntimeInventory))) ||
+                (!permitsReason && value.ObservationReason is not null) ||
+                (value.ObservationReason is { } reason && (!Enum.IsDefined(reason) || reason == ComponentInspectionReason.None)))
+            { failure = StatusResponseFailure.InvalidTrustedManifestIntegrity; return false; }
             integrity = value; return true;
         }
         catch (JsonException) { failure = StatusResponseFailure.MalformedJson; return false; }

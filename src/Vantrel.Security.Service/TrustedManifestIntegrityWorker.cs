@@ -30,20 +30,29 @@ public sealed class TrustedManifestIntegrityHistoryStore
     }
 }
 
-/// <summary>Authenticates a fixed signed manifest, then compares exactly seven fixed installed files.</summary>
-internal sealed record TrustedManifestCollectionResult(TrustedManifestIntegritySnapshot Snapshot, string? ManifestSha256);
+/// <summary>Authenticated installed evidence. V1 keeps its historical fixed-component path.</summary>
+internal sealed record TrustedManifestCollectionResult(TrustedManifestIntegritySnapshot Snapshot, string? ManifestSha256,
+    ReleaseIdentity? Identity = null, ReleaseMetadata? BoundMetadata = null, string? MetadataSha256 = null);
 
-public sealed class TrustedManifestIntegritySource
+public sealed partial class TrustedManifestIntegritySource
 {
     private readonly IComponentInspectionHandleOperations _operations;
     private readonly Func<bool> _isEligible;
     private readonly Func<ComponentInspectionTargetIdentity> _deriveManifest;
     private readonly Func<CancellationToken, CancellationTokenSource> _deadlineSource;
+    private readonly Func<byte[]> _manifestPublicKey;
+    private readonly Func<byte[]> _metadataPublicKey;
 
     public TrustedManifestIntegritySource() : this(new NativeComponentInspectionHandleOperations(), IsInstalledScmService, DeriveManifest, DeadlineSource) { }
     internal TrustedManifestIntegritySource(IComponentInspectionHandleOperations operations, Func<bool> isEligible,
-        Func<ComponentInspectionTargetIdentity> deriveManifest, Func<CancellationToken, CancellationTokenSource>? deadlineSource = null)
-    { _operations = operations; _isEligible = isEligible; _deriveManifest = deriveManifest; _deadlineSource = deadlineSource ?? DeadlineSource; }
+        Func<ComponentInspectionTargetIdentity> deriveManifest, Func<CancellationToken, CancellationTokenSource>? deadlineSource = null,
+        Func<byte[]>? manifestPublicKey = null, Func<byte[]>? metadataPublicKey = null)
+    {
+        _operations = operations; _isEligible = isEligible; _deriveManifest = deriveManifest;
+        _deadlineSource = deadlineSource ?? DeadlineSource;
+        _manifestPublicKey = manifestPublicKey ?? (() => TrustedManifestPublicKey.SubjectPublicKeyInfo);
+        _metadataPublicKey = metadataPublicKey ?? (() => ReleaseMetadataPublicKey.SubjectPublicKeyInfo);
+    }
 
     public async Task<TrustedManifestIntegritySnapshot> CollectAsync(CancellationToken cancellationToken) =>
         (await CollectWithEvidenceAsync(cancellationToken)).Snapshot;
@@ -61,17 +70,29 @@ public sealed class TrustedManifestIntegritySource
             if (!ComponentInspectionSource.Contained(root, full) || !string.Equals(Path.GetFileName(full), "Vantrel.Security.TrustedManifest", StringComparison.Ordinal))
                 return Result(sampled, TrustedManifestSignatureState.ManifestUnavailable, TrustedManifestInstallationEvaluation.ManifestUnavailable, ComponentInspectionReason.OutsideInstallRoot);
             using var timeout = _deadlineSource(cancellationToken);
-            var manifestBytes = await ReadBoundedAsync(full, root, TrustedManifestCodec.MaximumBytes, timeout.Token);
-            if (!TrustedManifestCodec.TryParse(manifestBytes, out var manifest, out var parseFailure))
-                return parseFailure switch
+            var selected = await ReadSelectedManifestAsync(full, root, timeout.Token);
+            using var protectedManifest = selected.Binding;
+            var manifestBytes = selected.Bytes;
+            if (!TrustedManifestSchemaCodec.TryParse(manifestBytes, out var manifest, out var v2Manifest, out var parseFailure))
+                return selected.DeclaredV2 ? parseFailure switch
+                {
+                    TrustedManifestParseFailure.UnsupportedSchema => V2Result(sampled, TrustedManifestSignatureState.UnsupportedSchema, TrustedManifestInstallationEvaluation.ManifestInvalid),
+                    _ => V2Result(sampled, TrustedManifestSignatureState.ManifestMalformed, TrustedManifestInstallationEvaluation.ManifestInvalid)
+                } : parseFailure switch
                 {
                     TrustedManifestParseFailure.UnsupportedSchema => Result(sampled, TrustedManifestSignatureState.UnsupportedSchema, TrustedManifestInstallationEvaluation.ManifestInvalid),
                     TrustedManifestParseFailure.Unavailable => Result(sampled, TrustedManifestSignatureState.ManifestUnavailable, TrustedManifestInstallationEvaluation.ManifestUnavailable),
                     _ => Result(sampled, TrustedManifestSignatureState.ManifestMalformed, TrustedManifestInstallationEvaluation.ManifestInvalid)
                 };
+            if (selected.DeclaredV2)
+                return v2Manifest is not null && protectedManifest is not null
+                    ? await CollectV2Async(sampled, root, manifestBytes, v2Manifest, protectedManifest, timeout.Token)
+                    : V2Result(sampled, TrustedManifestSignatureState.UnsupportedSchema, TrustedManifestInstallationEvaluation.ManifestInvalid);
+            if (v2Manifest is not null)
+                return Result(sampled, TrustedManifestSignatureState.UnsupportedSchema, TrustedManifestInstallationEvaluation.ManifestInvalid);
             var authenticatedManifest = manifest!;
             var manifestSha256 = Convert.ToHexString(SHA256.HashData(manifestBytes));
-            if (!TrustedManifestCodec.Verify(authenticatedManifest, TrustedManifestPublicKey.SubjectPublicKeyInfo))
+            if (!VerifyV1Signature(authenticatedManifest, _manifestPublicKey()))
                 return Result(sampled, TrustedManifestSignatureState.SignatureInvalid, TrustedManifestInstallationEvaluation.ManifestInvalid);
             foreach (var (component, name) in Components)
             {
@@ -91,6 +112,48 @@ public sealed class TrustedManifestIntegritySource
         catch (IOException) { return Result(sampled, TrustedManifestSignatureState.ManifestUnavailable, TrustedManifestInstallationEvaluation.ManifestUnavailable, ComponentInspectionReason.IoFailure); }
     }
 
+    private async Task<(byte[] Bytes, ProtectedV2File? Binding, bool DeclaredV2)> ReadSelectedManifestAsync(
+        string path, string root, CancellationToken token)
+    {
+        byte[] framing;
+        using (var handle = _operations.Open(path))
+        {
+            var before = _operations.Metadata(handle);
+            Validate(before, root, _operations.FinalPath(handle), TrustedManifestV2Codec.MaximumBytes);
+            await using var stream = _operations.CreateStream(handle);
+            using var memory = new MemoryStream();
+            var one = new byte[1];
+            while (memory.Length <= 64 && await stream.ReadAsync(one, token) != 0)
+            {
+                memory.WriteByte(one[0]);
+                if (one[0] == (byte)'\n') break;
+            }
+            framing = memory.ToArray();
+            if (!framing.AsSpan().SequenceEqual("schema=vantrel-trusted-manifest-v2\n"u8))
+            {
+                var buffer = new byte[65536]; int read;
+                while ((read = await stream.ReadAsync(buffer, token)) != 0)
+                {
+                    if (memory.Length + read > TrustedManifestCodec.MaximumBytes)
+                        throw new IOException("Fixed trusted manifest exceeds its bound.");
+                    memory.Write(buffer, 0, read);
+                }
+                if (_operations.Metadata(handle) != before)
+                    throw new IOException("Fixed trusted manifest changed during read.");
+                return (memory.ToArray(), null, false);
+            }
+            if (_operations.Metadata(handle) != before)
+                throw new IOException("Trusted manifest changed during schema selection.");
+        }
+        var bound = await OpenProtectedV2Async(path, root, TrustedManifestV2Codec.MaximumBytes, token);
+        if (!bound.Bytes.AsSpan().StartsWith(framing))
+        {
+            bound.Dispose();
+            throw new IOException("Trusted manifest schema changed before protected read.");
+        }
+        return (bound.Bytes, bound, true);
+    }
+
     internal async Task<byte[]?> ReadManifestForReleaseProvenanceAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -101,7 +164,11 @@ public sealed class TrustedManifestIntegritySource
         if (!ComponentInspectionSource.Contained(root, path) || !string.Equals(Path.GetFileName(path), "Vantrel.Security.TrustedManifest", StringComparison.Ordinal))
             throw new IOException("Fixed trusted manifest identity rejected.");
         using var timeout = _deadlineSource(cancellationToken);
-        return await ReadBoundedAsync(path, root, TrustedManifestCodec.MaximumBytes, timeout.Token);
+        var bytes = await ReadBoundedAsync(path, root, TrustedManifestV2Codec.MaximumBytes, timeout.Token);
+        if (bytes.Length > TrustedManifestCodec.MaximumBytes &&
+            !bytes.AsSpan().StartsWith("schema=vantrel-trusted-manifest-v2\n"u8))
+            throw new IOException("Fixed trusted manifest exceeds its bound.");
+        return bytes;
     }
     private async Task<byte[]> ReadBoundedAsync(string path, string root, int maximum, CancellationToken token)
     {

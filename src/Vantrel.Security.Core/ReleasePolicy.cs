@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace Vantrel.Security.Core;
 
-public enum ReleasePolicyDecision { BootstrapAccepted, SameAcceptedRelease, HigherRelease, SequenceConflict, RollbackBlocked, PolicyUnavailable }
+public enum ReleasePolicyDecision { BootstrapAccepted, SameAcceptedRelease, HigherRelease, SequenceConflict, RollbackBlocked, PolicyUnavailable, TransitionRequiresCoordination, GenerationDowngradeBlocked }
 public enum ReleasePolicyParseFailure { None, Unavailable, Malformed, UnsupportedSchema, InvalidIdentity }
 
 /// <summary>Minimal durable high-water state. It contains no signing material or arbitrary metadata.</summary>

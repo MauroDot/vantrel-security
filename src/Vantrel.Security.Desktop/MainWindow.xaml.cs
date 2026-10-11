@@ -263,6 +263,10 @@ public partial class MainWindow : Window
         TrustedManifestSampleText.Text = value is null ? "Sample: unavailable" : $"Sample: {value.SampledAtUtc.ToLocalTime():G}";
         TrustedManifestValueText.Text = value switch
         {
+            { PolicyRevision: StatusProtocol.TrustedManifestIntegrityPolicyRevisionV2, SignatureState: TrustedManifestSignatureState.Valid, Evaluation: TrustedManifestInstallationEvaluation.AllMatch } => "Manifest authentication: Valid. Complete installed Service runtime inventory matches the signed v2 manifest.",
+            { PolicyRevision: StatusProtocol.TrustedManifestIntegrityPolicyRevisionV2, SignatureState: TrustedManifestSignatureState.Valid, Evaluation: TrustedManifestInstallationEvaluation.ComponentMismatch } => "Manifest authentication: Valid. Installed Service runtime inventory mismatch.",
+            { PolicyRevision: StatusProtocol.TrustedManifestIntegrityPolicyRevisionV2, SignatureState: TrustedManifestSignatureState.Valid, Evaluation: TrustedManifestInstallationEvaluation.ManifestInvalid } => "Manifest authentication: Valid. Bound release metadata invalid.",
+            { PolicyRevision: StatusProtocol.TrustedManifestIntegrityPolicyRevisionV2, SignatureState: TrustedManifestSignatureState.Valid, Evaluation: TrustedManifestInstallationEvaluation.ObservationUnavailable } => $"Manifest authentication: Valid. Installed Service observation unavailable: {value.ObservationReason}.",
             { SignatureState: TrustedManifestSignatureState.Valid, Evaluation: TrustedManifestInstallationEvaluation.AllMatch } => "Manifest authentication: Valid. All seven fixed installed components match the signed manifest.",
             { SignatureState: TrustedManifestSignatureState.Valid, Evaluation: TrustedManifestInstallationEvaluation.ComponentMismatch } => $"Manifest authentication: Valid. Component mismatch: {value.MismatchedComponent}.",
             { SignatureState: TrustedManifestSignatureState.Valid, Evaluation: TrustedManifestInstallationEvaluation.ObservationUnavailable } => $"Manifest authentication: Valid. Component observation unavailable: {value.ObservationReason}.",

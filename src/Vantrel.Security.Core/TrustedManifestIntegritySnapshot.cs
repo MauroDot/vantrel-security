@@ -3,7 +3,7 @@ namespace Vantrel.Security.Core;
 public enum TrustedManifestSignatureState { Valid, SignatureInvalid, ManifestUnavailable, ManifestMalformed, UnsupportedSchema }
 public enum TrustedManifestInstallationEvaluation { AllMatch, ComponentMismatch, ObservationUnavailable, ManifestUnavailable, ManifestInvalid }
 public enum TrustedManifestIntegrityDisplayState { Disconnected, Unavailable, Stale, Current, Recovered }
-public enum TrustedManifestComponent { ServiceExe, ServiceAssembly, InfrastructureAssembly, CoreAssembly, Deps, RuntimeConfig, EventLogResource }
+public enum TrustedManifestComponent { ServiceExe, ServiceAssembly, InfrastructureAssembly, CoreAssembly, Deps, RuntimeConfig, EventLogResource, RuntimeInventory }
 
 /// <summary>A signed, fixed installation comparison. It is not a malware, safety, or system-wide trust verdict.</summary>
 public sealed record TrustedManifestIntegritySnapshot(DateTimeOffset SampledAtUtc, string PolicyRevision,
