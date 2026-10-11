@@ -50,8 +50,16 @@ public static class ServicePublishFileSnapshot
     private const string PlaceholderHash = "0000000000000000000000000000000000000000000000000000000000000000";
 
     public static ServicePublishSnapshot Capture(string root)
+        => Capture(root, DepsFileName, RuntimeConfigFileName);
+
+    internal static ServicePublishSnapshot Capture(string root, string depsFileName,
+        string runtimeConfigFileName)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+        if (string.IsNullOrEmpty(depsFileName) || string.IsNullOrEmpty(runtimeConfigFileName) ||
+            depsFileName.Contains('/') || depsFileName.Contains('\\') ||
+            runtimeConfigFileName.Contains('/') || runtimeConfigFileName.Contains('\\') ||
+            depsFileName == runtimeConfigFileName) throw new IOException("Publish metadata identity is invalid.");
         var fullRoot = RequireRoot(root);
         var retained = new List<BoundEntry>();
         try
@@ -123,12 +131,12 @@ public static class ServicePublishFileSnapshot
                     throw new IOException("Service publish content is oversized.");
                 totalBytes += length;
                 string hash;
-                if (file.RelativePath == DepsFileName)
+                if (file.RelativePath == depsFileName)
                 {
                     depsBytes = ReadBounded(file, MaximumDepsBytes);
                     hash = Convert.ToHexString(SHA256.HashData(depsBytes));
                 }
-                else if (file.RelativePath == RuntimeConfigFileName)
+                else if (file.RelativePath == runtimeConfigFileName)
                 {
                     runtimeConfigBytes = ReadBounded(file, MaximumRuntimeConfigBytes);
                     hash = Convert.ToHexString(SHA256.HashData(runtimeConfigBytes));

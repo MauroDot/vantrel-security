@@ -184,6 +184,44 @@ public static class ReleaseLayoutToolCommand
                 ExplicitAbsolutePath(values, "--output-root"), provenance);
             output.WriteLine("V2 Service release evidence recorded. Installer and offline-update consumers remain v1-only.");
         }
+        else if (command == "project-v2-product")
+        {
+            if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+            RequireExactKeys(values, "--source-root", "--source-commit", "--service-release-root",
+                "--output-root");
+            var source = ExplicitAbsolutePath(values, "--source-root");
+            var commit = Required(values, "--source-commit");
+            var serviceRoot = ExplicitAbsolutePath(values, "--service-release-root");
+            var outputRoot = ExplicitAbsolutePath(values, "--output-root");
+            var runner = v2BuildRunner ?? new SystemReleaseV2CommandRunner();
+            var provenance = ServiceReleaseV2BuildProvenancePreflight.VerifyAndRestore(source,
+                commit, runner);
+            var recordBytes = ServiceReleaseV2FileSystemSecurity.ReadProtectedFileBytes(
+                Path.Combine(serviceRoot, BetaReleaseRecordV2Codec.FileName), 512 * 1024);
+            if (!BetaReleaseRecordV2Codec.TryParse(recordBytes, out var record) || record is null ||
+                record.Descriptor.SourceCommit != commit ||
+                record.SourceLockSha256 != provenance.SourceLockSha256) throw new IOException();
+            var published = ProductReleaseV2BuildInputs.Publish(source,
+                Path.GetDirectoryName(outputRoot)!, record.Descriptor, provenance, runner);
+            ProductReleaseV2Projector.Project(serviceRoot, outputRoot, published);
+            output.WriteLine("V2 product layout projected. Sign the nine Desktop/tool owned PEs before explicit product recording.");
+        }
+        else if (command == "record-v2-product")
+        {
+            if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+            RequireExactKeys(values, "--source-root", "--source-commit", "--output-root");
+            var source = ExplicitAbsolutePath(values, "--source-root");
+            var commit = Required(values, "--source-commit");
+            var root = ExplicitAbsolutePath(values, "--output-root");
+            var runner = v2BuildRunner ?? new SystemReleaseV2CommandRunner();
+            var provenance = ServiceReleaseV2BuildProvenancePreflight.VerifyAndRestore(source,
+                commit, runner);
+            _ = new ProductReleaseV2RecordGate(
+                new ProductionServiceReleaseV2SourceBinding(source, commit, runner),
+                new ProductionProductReleaseV2SourceGate(source, provenance, runner))
+                .ValidateAndWriteRecord(root, provenance);
+            output.WriteLine("V2 whole-product release evidence recorded. Installer and installed-runtime consumers remain v1-only.");
+        }
         else if (command == "inspect-authenticode")
         {
             RequireExactKeys(values, "--file");

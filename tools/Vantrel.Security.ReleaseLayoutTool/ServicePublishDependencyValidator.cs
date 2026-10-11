@@ -21,6 +21,13 @@ public sealed class ServicePublishDependencyValidation
     public IReadOnlyList<ServicePublishExcludedBuildArtifact> ExcludedBuildArtifacts { get; }
 }
 
+internal sealed record PublishDependencyContract(string ProjectName, string DepsFileName,
+    string RuntimeConfigFileName, IReadOnlyDictionary<string, string> DirectDependencies,
+    IReadOnlyList<string> RequiredSupportingFiles, IReadOnlySet<string> OptionalSupportingFiles,
+    IReadOnlyList<string> ProjectAssemblies, IReadOnlyList<string> Frameworks,
+    IReadOnlyDictionary<string, string> ExcludedBuildArtifacts,
+    bool RequireExactProjectLibraries = false);
+
 /// <summary>
 /// Checks the internal consistency of one controlled, framework-dependent win-x64 Service
 /// publish. This is not a release authorization: a matching directory and .deps.json can both
@@ -65,7 +72,7 @@ public static class ServicePublishDependencyValidator
     /// </summary>
     public static IReadOnlyList<TrustedManifestV2File> Validate(string publishRoot)
     {
-        return ValidateCore(publishRoot, approvedSourceLockSha256: null).DeployableFiles;
+        return ValidateCore(publishRoot, ServiceContract(null)).DeployableFiles;
     }
 
     /// <summary>
@@ -79,25 +86,39 @@ public static class ServicePublishDependencyValidator
         if (approvedSourceLockSha256 is not { Length: 64 } ||
             approvedSourceLockSha256.Any(c => !char.IsAsciiDigit(c) && c is not (>= 'A' and <= 'F')))
             throw new InvalidDataException(Invalid);
-        return ValidateCore(publishRoot, approvedSourceLockSha256);
+        return ValidateCore(publishRoot, ServiceContract(approvedSourceLockSha256));
     }
 
+    internal static ServicePublishDependencyValidation ValidateProductPublish(string publishRoot,
+        PublishDependencyContract contract)
+        => ValidateCore(publishRoot, contract);
+
+    private static PublishDependencyContract ServiceContract(string? sourceLockHash) => new(
+        "Vantrel.Security.Service", ServicePublishFileSnapshot.DepsFileName,
+        ServicePublishFileSnapshot.RuntimeConfigFileName, DirectDependencies,
+        RequiredSupportingFiles, OptionalSupportingFiles,
+        ["Vantrel.Security.Service", "Vantrel.Security.Core", "Vantrel.Security.Infrastructure"],
+        ["Microsoft.NETCore.App"], sourceLockHash is null
+            ? new Dictionary<string, string>()
+            : new Dictionary<string, string> { [SourceLockFileName] = sourceLockHash });
+
     private static ServicePublishDependencyValidation ValidateCore(string publishRoot,
-        string? approvedSourceLockSha256)
+        PublishDependencyContract contract)
     {
-        var snapshot = ServicePublishFileSnapshot.Capture(publishRoot);
-        ValidateRuntimeConfiguration(snapshot.RuntimeConfigBytes);
-        var requiredPaths = ReadRequiredDependencyPaths(snapshot.DepsBytes);
-        foreach (var path in RequiredSupportingFiles)
+        var snapshot = ServicePublishFileSnapshot.Capture(publishRoot,
+            contract.DepsFileName, contract.RuntimeConfigFileName);
+        ValidateRuntimeConfiguration(snapshot.RuntimeConfigBytes, contract.Frameworks);
+        var requiredPaths = ReadRequiredDependencyPaths(snapshot.DepsBytes, contract);
+        foreach (var path in contract.RequiredSupportingFiles)
             AddUnique(requiredPaths, path);
 
         var deployable = new List<TrustedManifestV2File>(snapshot.Files.Count);
         var excluded = new List<ServicePublishExcludedBuildArtifact>(1);
         foreach (var file in snapshot.Files)
         {
-            if (file.Path == SourceLockFileName)
+            if (contract.ExcludedBuildArtifacts.TryGetValue(file.Path, out var approvedHash))
             {
-                if (approvedSourceLockSha256 is null || file.Sha256 != approvedSourceLockSha256)
+                if (file.Sha256 != approvedHash)
                     throw new InvalidDataException(Invalid);
                 excluded.Add(new(file.Path, file.Sha256));
             }
@@ -105,7 +126,7 @@ public static class ServicePublishDependencyValidator
         }
         var measured = deployable;
         foreach (var file in measured)
-            if (OptionalSupportingFiles.Contains(file.Path)) AddUnique(requiredPaths, file.Path);
+            if (contract.OptionalSupportingFiles.Contains(file.Path)) AddUnique(requiredPaths, file.Path);
         if (measured.Count != requiredPaths.Count)
             throw new InvalidDataException(Invalid);
         foreach (var file in measured)
@@ -132,22 +153,30 @@ public static class ServicePublishDependencyValidator
         return measured;
     }
 
-    private static void ValidateRuntimeConfiguration(byte[] bytes)
+    private static void ValidateRuntimeConfiguration(byte[] bytes, IReadOnlyList<string> frameworks)
     {
         using var document = ParseStrict(bytes);
         var root = RequireObject(document.RootElement);
         RequireFields(root, "runtimeOptions");
         var options = RequireObject(Required(root, "runtimeOptions"));
-        RequireFields(options, "tfm", "framework", "configProperties");
+        RequireFields(options, "tfm", "framework", "frameworks", "configProperties");
         if (RequireString(Required(options, "tfm")) != "net10.0" ||
-            options.TryGetProperty("frameworks", out _) ||
             options.TryGetProperty("includedFrameworks", out _))
             throw new InvalidDataException(Invalid);
-        var framework = RequireObject(Required(options, "framework"));
-        RequireFields(framework, "name", "version");
-        if (RequireString(Required(framework, "name")) != "Microsoft.NETCore.App" ||
-            RequireString(Required(framework, "version")) != "10.0.0")
-            throw new InvalidDataException(Invalid);
+        if (frameworks.Count == 1)
+        {
+            if (options.TryGetProperty("frameworks", out _)) throw new InvalidDataException(Invalid);
+            RequireFramework(Required(options, "framework"), frameworks[0]);
+        }
+        else
+        {
+            if (options.TryGetProperty("framework", out _) ||
+                !options.TryGetProperty("frameworks", out var values) ||
+                values.ValueKind != JsonValueKind.Array ||
+                values.GetArrayLength() != frameworks.Count) throw new InvalidDataException(Invalid);
+            for (var i = 0; i < frameworks.Count; i++)
+                RequireFramework(values[i], frameworks[i]);
+        }
         if (options.TryGetProperty("configProperties", out var properties))
         {
             RequireObject(properties);
@@ -161,7 +190,17 @@ public static class ServicePublishDependencyValidator
         }
     }
 
-    private static HashSet<string> ReadRequiredDependencyPaths(byte[] bytes)
+    private static void RequireFramework(JsonElement value, string name)
+    {
+        var framework = RequireObject(value);
+        RequireFields(framework, "name", "version");
+        if (RequireString(Required(framework, "name")) != name ||
+            RequireString(Required(framework, "version")) != "10.0.0")
+            throw new InvalidDataException(Invalid);
+    }
+
+    private static HashSet<string> ReadRequiredDependencyPaths(byte[] bytes,
+        PublishDependencyContract contract)
     {
         using var document = ParseStrict(bytes);
         var root = RequireObject(document.RootElement);
@@ -188,6 +227,7 @@ public static class ServicePublishDependencyValidator
 
         var libraries = RequireObject(Required(root, "libraries"));
         var byName = new Dictionary<string, Library>(StringComparer.OrdinalIgnoreCase);
+        var projectLibraries = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in selected.EnumerateObject())
         {
             var (name, version) = ParseLibraryIdentity(item.Name);
@@ -197,32 +237,53 @@ public static class ServicePublishDependencyValidator
             var type = RequireString(Required(library, "type"));
             if (type is not ("package" or "project"))
                 throw new InvalidDataException(Invalid);
+            if (contract.RequireExactProjectLibraries && type == "project")
+            {
+                if (!contract.ProjectAssemblies.Contains(name, StringComparer.Ordinal) ||
+                    version != "0.1.0" || !projectLibraries.Add(name))
+                    throw new InvalidDataException(Invalid);
+                RequireSingleProjectAssembly(RequireObject(item.Value), name);
+            }
         }
-        if (libraries.EnumerateObject().Count() != byName.Count ||
-            !byName.TryGetValue("Vantrel.Security.Service", out var service) ||
-            service.Name != "Vantrel.Security.Service" || service.Version != "0.1.0")
+        if (contract.RequireExactProjectLibraries &&
+            (projectLibraries.Count != contract.ProjectAssemblies.Count ||
+             contract.ProjectAssemblies.Any(name => !projectLibraries.Contains(name))))
             throw new InvalidDataException(Invalid);
-        RequireRootDependencies(service.Body);
+        if (libraries.EnumerateObject().Count() != byName.Count ||
+            !byName.TryGetValue(contract.ProjectName, out var service) ||
+            service.Name != contract.ProjectName || service.Version != "0.1.0")
+            throw new InvalidDataException(Invalid);
+        RequireRootDependencies(service.Body, contract.DirectDependencies);
         CheckDependencyGraph(byName, service);
 
         var required = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var library in byName.Values)
             AddAssets(library.Body, required);
-        foreach (var project in new[]
-        {
-            "Vantrel.Security.Service", "Vantrel.Security.Core", "Vantrel.Security.Infrastructure"
-        })
+        foreach (var project in contract.ProjectAssemblies)
             if (!required.Contains(project + ".dll"))
                 throw new InvalidDataException(Invalid);
         return required;
     }
 
-    private static void RequireRootDependencies(JsonElement rootLibrary)
+    private static void RequireSingleProjectAssembly(JsonElement library, string projectName)
+    {
+        var runtime = RequireObject(Required(library, "runtime"));
+        if (runtime.EnumerateObject().Count() != 1 ||
+            !runtime.TryGetProperty(projectName + ".dll", out _))
+            throw new InvalidDataException(Invalid);
+        foreach (var section in new[] { "native", "resources", "runtimeTargets" })
+            if (library.TryGetProperty(section, out var assets) &&
+                RequireObject(assets).EnumerateObject().Any())
+                throw new InvalidDataException(Invalid);
+    }
+
+    private static void RequireRootDependencies(JsonElement rootLibrary,
+        IReadOnlyDictionary<string, string> directDependencies)
     {
         var dependencies = RequireObject(Required(rootLibrary, "dependencies"));
-        if (dependencies.EnumerateObject().Count() != DirectDependencies.Count)
+        if (dependencies.EnumerateObject().Count() != directDependencies.Count)
             throw new InvalidDataException(Invalid);
-        foreach (var dependency in DirectDependencies)
+        foreach (var dependency in directDependencies)
             if (RequireString(Required(dependencies, dependency.Key)) != dependency.Value)
                 throw new InvalidDataException(Invalid);
     }
