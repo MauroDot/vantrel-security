@@ -249,10 +249,22 @@ public sealed class ComponentInspectionNativeTests
             DateTimeOffset.UtcNow.AddTicks(i), StatusProtocol.ComponentInspectionPolicyRevision,
             ComponentInspectionTarget.VantrelServiceAssembly, ComponentInspectionOutcome.Observed,
             ComponentInspectionReason.None, ComponentHashAlgorithm.Sha256, i.ToString("X64"), i)).ToArray();
-        var writer = Task.Run(() => { foreach (var sample in samples) store.Update(sample); });
-        var readers = Enumerable.Range(0, 8).Select(_ => Task.Run(() =>
+        const int readerCount = 8;
+        var ready = 0;
+        var readersReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var writer = Task.Run(async () =>
         {
-            while (!writer.IsCompleted)
+            await readersReady.Task;
+            foreach (var sample in samples)
+            {
+                store.Update(sample);
+                await Task.Yield();
+            }
+        });
+        var readers = Enumerable.Range(0, readerCount).Select(_ => Task.Run(async () =>
+        {
+            if (Interlocked.Increment(ref ready) == readerCount) readersReady.TrySetResult();
+            do
             {
                 var snapshot = store.Snapshot();
                 if (snapshot is not null)
@@ -262,7 +274,8 @@ public sealed class ComponentInspectionNativeTests
                     Assert.AreEqual(64, snapshot.Hash!.Length);
                     Assert.AreEqual(snapshot.ObservedByteLength!.Value.ToString("X64"), snapshot.Hash);
                 }
-            }
+                await Task.Yield();
+            } while (!writer.IsCompleted);
         })).ToArray();
         await Task.WhenAll(readers.Append(writer));
         Assert.AreSame(samples[^1], store.Snapshot());

@@ -32,7 +32,8 @@ public sealed class TrustedManifestIntegrityHistoryStore
 
 /// <summary>Authenticated installed evidence. V1 keeps its historical fixed-component path.</summary>
 internal sealed record TrustedManifestCollectionResult(TrustedManifestIntegritySnapshot Snapshot, string? ManifestSha256,
-    ReleaseIdentity? Identity = null, ReleaseMetadata? BoundMetadata = null, string? MetadataSha256 = null);
+    ReleaseIdentity? Identity = null, ReleaseMetadata? BoundMetadata = null, string? MetadataSha256 = null,
+    ImmutableArray<TrustedManifestV2File> VerifiedInventory = default);
 
 public sealed partial class TrustedManifestIntegritySource
 {

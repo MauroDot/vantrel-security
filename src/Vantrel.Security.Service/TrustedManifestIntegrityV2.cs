@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Collections.Immutable;
 using System.Security.Cryptography;
 using Microsoft.Win32.SafeHandles;
 using Vantrel.Security.Core;
@@ -144,7 +145,7 @@ public sealed partial class TrustedManifestIntegritySource
                 return new TrustedManifestCollectionResult(
                     new(sampled, StatusProtocol.TrustedManifestIntegrityPolicyRevisionV2, TrustedManifestSignatureState.Valid,
                         TrustedManifestInstallationEvaluation.AllMatch, null, null), manifestHash, identity, metadata,
-                    Convert.ToHexString(SHA256.HashData(metadataBytes)));
+                    Convert.ToHexString(SHA256.HashData(metadataBytes)), manifest.Files.ToImmutableArray());
             }
             finally
             {

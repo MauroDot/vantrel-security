@@ -151,6 +151,52 @@ public sealed class ReleasePolicyStore
         finally { _gate.Release(); }
     }
 
+    /// <summary>Reads either canonical durable generation without migrating or replacing historical policy bytes.</summary>
+    internal async Task<(ReleaseIdentity? Identity, ReleasePolicyParseFailure Failure)> ReadPolicyIdentityAsync(
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!Directory.Exists(_vantrelRoot) || !Directory.Exists(_policyDirectory) || !File.Exists(_policyPath))
+                return (null, ReleasePolicyParseFailure.Unavailable);
+            OfflineReleaseVerifier.RejectReparseAncestors(_policyPath);
+            using var handle = ComponentInspectionNative.OpenProtected(_policyPath);
+            var before = ComponentInspectionNative.GetMetadata(handle);
+            var finalPath = ComponentInspectionNative.FinalPath(handle);
+            if (before.IsDirectory || before.IsReparsePoint || before.Length is <= 0 or > GenerationAwareReleasePolicyCodec.MaximumBytes ||
+                !string.Equals(Path.GetFullPath(_policyPath), Path.GetFullPath(finalPath), StringComparison.OrdinalIgnoreCase))
+                return (null, ReleasePolicyParseFailure.Malformed);
+            var bytes = new byte[checked((int)before.Length)];
+            for (var offset = 0; offset < bytes.Length;)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var count = RandomAccess.Read(handle, bytes.AsSpan(offset), offset);
+                if (count == 0) return (null, ReleasePolicyParseFailure.Malformed);
+                offset += count;
+            }
+            if (ComponentInspectionNative.GetMetadata(handle) != before ||
+                !string.Equals(ComponentInspectionNative.FinalPath(handle), finalPath, StringComparison.Ordinal))
+                return (null, ReleasePolicyParseFailure.Malformed);
+            if (bytes.AsSpan().StartsWith("{\"schema\":\"vantrel-release-policy-v1\""u8))
+            {
+                if (!ReleasePolicyCodec.TryParse(bytes, out var historical, out var failure) || historical is null)
+                    return (null, failure);
+                return (new ReleaseIdentity(ReleaseGeneration.V1, historical.HighestAcceptedReleaseSequence,
+                    historical.AcceptedManifestSha256), ReleasePolicyParseFailure.None);
+            }
+            if (bytes.AsSpan().StartsWith("{\"schema\":\"vantrel-release-policy-v2\""u8))
+            {
+                if (!GenerationAwareReleasePolicyCodec.TryParse(bytes, out var generation, out var failure) || generation is null)
+                    return (null, failure);
+                return (generation.Identity, ReleasePolicyParseFailure.None);
+            }
+            return (null, ReleasePolicyParseFailure.UnsupportedSchema);
+        }
+        finally { _gate.Release(); }
+    }
+
     internal async Task<ReleasePolicyDecision> EvaluateVerifiedAsync(VerifiedRelease verified, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(verified);
