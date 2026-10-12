@@ -126,7 +126,24 @@ public sealed class UpdateTransactionJournalStoreTests
             try { Directory.CreateSymbolicLink(link, target); }
             catch (UnauthorizedAccessException) { Assert.Inconclusive("Symbolic-link privilege unavailable."); }
             catch (IOException ex) when ((uint)ex.HResult == 0x80070522) { Assert.Inconclusive("Symbolic-link privilege unavailable."); }
-            await Assert.ThrowsExceptionAsync<IOException>(() => new UpdateTransactionJournalStore(scope.Root, true).ReadAsync(CancellationToken.None));
+            Assert.AreNotEqual(0, (int)(File.GetAttributes(link) & FileAttributes.ReparsePoint));
+            Assert.IsFalse(Directory.Exists(Path.Combine(link, "Transactions")));
+            Assert.IsFalse(File.Exists(Path.Combine(link, UpdateTransactionJournalStore.LockFileName)));
+            var store = new UpdateTransactionJournalStore(scope.Root, true);
+            var read = await store.ReadAsync(CancellationToken.None);
+            Assert.AreEqual(JournalReadState.MissingInfrastructure, read.State);
+            Assert.AreEqual(UpdateTransactionJournalParseFailure.Unavailable, read.Failure);
+            Assert.IsNull(read.Journal);
+            var continued = false;
+            await Assert.ThrowsExceptionAsync<IOException>(() =>
+                OfflineUpdateAdministrator.WithValidatedJournalAsync(store, _ =>
+                {
+                    continued = true;
+                    return Task.FromResult(UpdateTransactionPhase.Prepared);
+                }, CancellationToken.None));
+            Assert.IsFalse(continued);
+            await Assert.ThrowsExceptionAsync<IOException>(() =>
+                store.PersistAsync(Journal(UpdateTransactionPhase.Prepared), CancellationToken.None));
             Assert.AreEqual(0, Directory.GetFileSystemEntries(target).Length);
         }
         finally { if (Directory.Exists(link)) Directory.Delete(link); }
