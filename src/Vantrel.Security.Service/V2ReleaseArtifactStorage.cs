@@ -17,6 +17,12 @@ internal sealed record V2ArtifactCopyCheckpoint(string Stage, int FileIndex, str
 internal sealed record V2ArtifactCopyEvidence(ReleaseIdentity Identity,
     ImmutableArray<TrustedManifestV2File> RuntimeInventory, V2ArtifactRole Role, string ArtifactId);
 
+/// <summary>One fresh, read-only observation. No result is lasting transaction authorization.</summary>
+internal enum V2ArtifactObservationState { Absent, Authenticated, InvalidOrUnavailable }
+
+internal sealed record V2ArtifactObservation(V2ArtifactObservationState State,
+    V2ArtifactCopyEvidence? Evidence = null);
+
 /// <summary>
 /// Isolated V2 artifact copy/retirement. It has no production transaction caller and never
 /// writes a journal, policy, installed Service tree, or V1 storage. Production roots are fixed;
@@ -96,6 +102,16 @@ internal sealed class V2ReleaseArtifactStorage
         CopyAsync(_installedRoot, GetPredecessorBackupPath(backupId), backupId,
             expected, V2ArtifactRole.PredecessorBackup, token);
 
+    internal Task<V2ArtifactObservation> ObservePrivateCandidateAsync(string transactionId,
+        ReleaseIdentity expected, CancellationToken token) =>
+        ObserveAsync(GetPrivateCandidatePath(transactionId), transactionId, expected,
+            V2ArtifactRole.PrivateCandidate, token);
+
+    internal Task<V2ArtifactObservation> ObservePredecessorBackupAsync(string backupId,
+        ReleaseIdentity expected, CancellationToken token) =>
+        ObserveAsync(GetPredecessorBackupPath(backupId), backupId, expected,
+            V2ArtifactRole.PredecessorBackup, token);
+
     internal Task RetirePrivateCandidateAsync(string transactionId, ReleaseIdentity expected,
         CancellationToken token) => RetireAsync(GetPrivateCandidatePath(transactionId), expected,
             V2ArtifactRole.PrivateCandidate, token);
@@ -103,6 +119,91 @@ internal sealed class V2ReleaseArtifactStorage
     internal Task RetirePredecessorBackupAsync(string backupId, ReleaseIdentity expected,
         CancellationToken token) => RetireAsync(GetPredecessorBackupPath(backupId), expected,
             V2ArtifactRole.PredecessorBackup, token);
+
+    private async Task<V2ArtifactObservation> ObserveAsync(string destination, string id,
+        ReleaseIdentity expected, V2ArtifactRole role, CancellationToken token)
+    {
+        RequireExpectedIdentity(expected);
+        token.ThrowIfCancellationRequested();
+        try
+        {
+            using var infrastructure = BindInfrastructure(role);
+            var branch = role == V2ArtifactRole.PrivateCandidate ? _transactionsRoot : _backupsRoot;
+            // Absence is established only within the already validated, retained role branch.
+            // Any other entry is conflicting residue, not an absent expected artifact.
+            if (!Directory.EnumerateFileSystemEntries(branch).Any())
+            {
+                infrastructure.Recheck(_enforceAcls);
+                return new(V2ArtifactObservationState.Absent);
+            }
+            RequireExactRoleBranch(branch, id);
+
+            using var held = new HeldBindings();
+            if (role == V2ArtifactRole.PrivateCandidate)
+            {
+                var transactionParent = Path.GetDirectoryName(destination)!;
+                held.Add(transactionParent,
+                    V2ArtifactFileSystemSecurity.OpenValidatedDirectory(transactionParent, _enforceAcls));
+                RequireExactTransactionContainer(transactionParent);
+            }
+            held.Add(destination, V2ArtifactFileSystemSecurity.OpenValidatedDirectory(destination, _enforceAcls));
+            var authenticated = await AuthenticateAsync(destination, expected, token);
+            var inventory = authenticated.RuntimeInventory;
+            RequireCanonicalInventory(inventory, expected);
+            var directories = ImpliedDirectories(inventory);
+            var files = inventory.Select(static file => file.Path).Concat([ManifestName, MetadataName]).ToArray();
+            var expectedTree = files.Concat(directories).ToHashSet(StringComparer.Ordinal);
+            RequireExactTree(destination, expectedTree, directories);
+
+            foreach (var relative in directories)
+            {
+                token.ThrowIfCancellationRequested();
+                var path = ResolveContained(destination, relative);
+                held.Add(path, V2ArtifactFileSystemSecurity.OpenValidatedDirectory(path, _enforceAcls));
+            }
+            long total = 0;
+            foreach (var relative in files)
+            {
+                token.ThrowIfCancellationRequested();
+                var path = ResolveContained(destination, relative);
+                var handle = V2ArtifactFileSystemSecurity.OpenValidatedFile(path, _enforceAcls);
+                held.Add(path, handle);
+                var runtime = inventory.FirstOrDefault(file => file.Path == relative);
+                var maximum = relative == ManifestName ? TrustedManifestV2Codec.MaximumBytes :
+                    relative == MetadataName ? ReleaseMetadataCodec.MaximumBytes : MaximumFileBytes;
+                var hash = await HashBoundAsync(handle, maximum, token);
+                if (runtime is not null)
+                {
+                    if (!string.Equals(hash, runtime.Sha256, StringComparison.Ordinal))
+                        throw new IOException("V2 artifact observed runtime bytes differ from signed inventory.");
+                    total = checked(total + ComponentInspectionNative.GetMetadata(handle).Length);
+                    if (total > MaximumTreeBytes)
+                        throw new IOException("V2 artifact observed runtime inventory exceeds its bound.");
+                }
+            }
+
+            // Reauthenticate while the exact tree, sidecars and all runtime files are retained
+            // under write/delete-denying handles. The result is transient observation only.
+            var retained = await AuthenticateAsync(destination, expected, token);
+            if (!inventory.SequenceEqual(retained.RuntimeInventory))
+                throw new IOException("V2 artifact observed inventory changed.");
+            RequireExactRoleBranch(branch, id);
+            if (role == V2ArtifactRole.PrivateCandidate)
+                RequireExactTransactionContainer(Path.GetDirectoryName(destination)!);
+            RequireExactTree(destination, expectedTree, directories);
+            held.Recheck(_enforceAcls);
+            infrastructure.Recheck(_enforceAcls);
+            return new(V2ArtifactObservationState.Authenticated,
+                new(expected, retained.RuntimeInventory, role, id));
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or
+            System.ComponentModel.Win32Exception or ArgumentException or NotSupportedException or
+            CryptographicException or System.Security.SecurityException or OverflowException)
+        {
+            return new(V2ArtifactObservationState.InvalidOrUnavailable);
+        }
+    }
 
     private async Task<V2ArtifactCopyEvidence> CopyAsync(string source, string destination, string id,
         ReleaseIdentity expected, V2ArtifactRole role, CancellationToken token)

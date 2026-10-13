@@ -83,6 +83,12 @@ public sealed class V2ReleaseArtifactStorageTests
             (await scope.Verifier.VerifyChainAsync(candidateRoot, CancellationToken.None)).Result);
         Assert.AreEqual(GenerationAwareOfflineVerificationResult.Authenticated,
             (await scope.Verifier.VerifyChainAsync(backupRoot, CancellationToken.None)).Result);
+        Assert.AreEqual(V2ArtifactObservationState.Authenticated,
+            (await scope.Storage.ObservePrivateCandidateAsync(TransactionId, candidate,
+                CancellationToken.None)).State);
+        Assert.AreEqual(V2ArtifactObservationState.Authenticated,
+            (await scope.Storage.ObservePredecessorBackupAsync(BackupId, predecessor,
+                CancellationToken.None)).State);
 
         await scope.Storage.RetirePrivateCandidateAsync(TransactionId, candidate, CancellationToken.None);
         await scope.Storage.RetirePredecessorBackupAsync(BackupId, predecessor, CancellationToken.None);
@@ -98,6 +104,112 @@ public sealed class V2ReleaseArtifactStorageTests
     {
         using var invalid = new SafeFileHandle(nint.Zero, ownsHandle: false);
         Assert.ThrowsException<IOException>(() => ComponentInspectionNative.GetHardLinkCount(invalid));
+    }
+
+    [TestMethod]
+    public async Task Observation_distinguishes_proven_absence_from_exact_authenticated_artifacts()
+    {
+        using var scope = new Scope();
+        var target = scope.WriteSignedRelease(scope.StagedRoot, 8,
+            ("Vantrel.Security.Service.exe", "target apphost"),
+            ("deps/Added.dll", "target dependency"));
+        var predecessor = scope.WriteSignedRelease(scope.InstalledRoot, 7,
+            ("Vantrel.Security.Service.exe", "predecessor apphost"));
+
+        var absentPrivate = await scope.Storage.ObservePrivateCandidateAsync(TransactionId, target,
+            CancellationToken.None);
+        var absentBackup = await scope.Storage.ObservePredecessorBackupAsync(BackupId, predecessor,
+            CancellationToken.None);
+        Assert.AreEqual(V2ArtifactObservationState.Absent, absentPrivate.State);
+        Assert.IsNull(absentPrivate.Evidence);
+        Assert.AreEqual(V2ArtifactObservationState.Absent, absentBackup.State);
+        Assert.IsNull(absentBackup.Evidence);
+
+        await scope.Storage.CopyPrivateCandidateAsync(TransactionId, target, CancellationToken.None);
+        await scope.Storage.CopyPredecessorBackupAsync(BackupId, predecessor, CancellationToken.None);
+        var privateObserved = await scope.Storage.ObservePrivateCandidateAsync(TransactionId, target,
+            CancellationToken.None);
+        var backupObserved = await scope.Storage.ObservePredecessorBackupAsync(BackupId, predecessor,
+            CancellationToken.None);
+        Assert.AreEqual(V2ArtifactObservationState.Authenticated, privateObserved.State);
+        Assert.AreEqual(target, privateObserved.Evidence!.Identity);
+        Assert.AreEqual(V2ArtifactRole.PrivateCandidate, privateObserved.Evidence.Role);
+        Assert.AreEqual(TransactionId, privateObserved.Evidence.ArtifactId);
+        Assert.AreEqual(V2ArtifactObservationState.Authenticated, backupObserved.State);
+        Assert.AreEqual(predecessor, backupObserved.Evidence!.Identity);
+        Assert.AreEqual(V2ArtifactRole.PredecessorBackup, backupObserved.Evidence.Role);
+        Assert.AreEqual(BackupId, backupObserved.Evidence.ArtifactId);
+        Assert.AreEqual(V2ArtifactObservationState.InvalidOrUnavailable,
+            (await scope.Storage.ObservePrivateCandidateAsync(TransactionId, predecessor,
+                CancellationToken.None)).State);
+    }
+
+    [TestMethod]
+    public async Task Observation_rejects_partial_and_foreign_role_residue_without_creating_or_repairing()
+    {
+        using var scope = new Scope();
+        var expected = scope.WriteSignedRelease(scope.StagedRoot, 8,
+            ("Vantrel.Security.Service.exe", "apphost"));
+        var partial = scope.PrivateDestination(TransactionId);
+        Directory.CreateDirectory(partial);
+        File.WriteAllText(Path.Combine(partial, "partial.bin"), "untrusted");
+        Assert.AreEqual(V2ArtifactObservationState.InvalidOrUnavailable,
+            (await scope.Storage.ObservePrivateCandidateAsync(TransactionId, expected,
+                CancellationToken.None)).State);
+        Assert.IsTrue(File.Exists(Path.Combine(partial, "partial.bin")),
+            "Read-only observation must not clean uncertain residue.");
+
+        Directory.CreateDirectory(Path.Combine(scope.ArtifactRoot, "Backups", TransactionId));
+        Assert.AreEqual(V2ArtifactObservationState.InvalidOrUnavailable,
+            (await scope.Storage.ObservePredecessorBackupAsync(BackupId, expected,
+                CancellationToken.None)).State);
+        Assert.IsFalse(Directory.Exists(scope.BackupDestination(BackupId)));
+    }
+
+    [TestMethod]
+    public async Task Observation_never_treats_missing_role_infrastructure_as_artifact_absence()
+    {
+        using var scope = new Scope();
+        var expected = scope.WriteSignedRelease(scope.StagedRoot, 8,
+            ("Vantrel.Security.Service.exe", "apphost"));
+        var branch = Path.Combine(scope.ArtifactRoot, "Backups");
+        Directory.Delete(branch);
+
+        var observed = await scope.Storage.ObservePredecessorBackupAsync(BackupId, expected,
+            CancellationToken.None);
+        Assert.AreEqual(V2ArtifactObservationState.InvalidOrUnavailable, observed.State);
+        Assert.IsNull(observed.Evidence);
+        Assert.IsFalse(Directory.Exists(branch), "Read-only observation must not repair infrastructure.");
+    }
+
+    [TestMethod]
+    public async Task Observation_rejects_mutated_or_missing_runtime_bytes_and_role_siblings()
+    {
+        using var scope = new Scope();
+        var expected = scope.WriteSignedRelease(scope.StagedRoot, 8,
+            ("Vantrel.Security.Service.exe", "apphost"),
+            ("deps/Added.dll", "dependency"));
+        await scope.Storage.CopyPrivateCandidateAsync(TransactionId, expected, CancellationToken.None);
+        var destination = scope.PrivateDestination(TransactionId);
+        var dependency = Path.Combine(destination, "deps", "Added.dll");
+        File.AppendAllText(dependency, "mutated");
+        Assert.AreEqual(V2ArtifactObservationState.InvalidOrUnavailable,
+            (await scope.Storage.ObservePrivateCandidateAsync(TransactionId, expected,
+                CancellationToken.None)).State);
+
+        File.Delete(dependency);
+        Assert.AreEqual(V2ArtifactObservationState.InvalidOrUnavailable,
+            (await scope.Storage.ObservePrivateCandidateAsync(TransactionId, expected,
+                CancellationToken.None)).State);
+
+        File.WriteAllText(dependency, "dependency");
+        Assert.AreEqual(V2ArtifactObservationState.Authenticated,
+            (await scope.Storage.ObservePrivateCandidateAsync(TransactionId, expected,
+                CancellationToken.None)).State);
+        Directory.CreateDirectory(Path.Combine(scope.ArtifactRoot, "Transactions", BackupId));
+        Assert.AreEqual(V2ArtifactObservationState.InvalidOrUnavailable,
+            (await scope.Storage.ObservePrivateCandidateAsync(TransactionId, expected,
+                CancellationToken.None)).State);
     }
 
     [TestMethod]
