@@ -9,13 +9,16 @@ namespace Vantrel.Security.Service;
 internal static class ComponentInspectionNative
 {
     private const uint GenericRead = 0x80000000;
+    private const uint DeleteAccess = 0x00010000;
     private const uint OpenExisting = 3;
     private const uint FileFlagOpenReparsePoint = 0x00200000;
     private const uint FileFlagOverlapped = 0x40000000;
     private const uint FileFlagBackupSemantics = 0x02000000;
     private const uint FileAttributeReparsePoint = 0x400;
     private const uint FileAttributeDirectory = 0x10;
+    private const uint FileTypeDisk = 1;
     private const int FileStreamInfo = 7;
+    private const int FileDispositionInfoClass = 4;
     private const int ErrorHandleEof = 38;
     private const int ErrorInsufficientBuffer = 122;
     private const int ErrorMoreData = 234;
@@ -31,15 +34,24 @@ internal static class ComponentInspectionNative
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out ByHandleFileInformation info);
     [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint GetFileType(SafeFileHandle handle);
+    [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int informationClass,
         [Out] byte[] information, uint informationLength);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetFileInformationByHandle(SafeFileHandle handle, int informationClass,
+        ref FileDispositionInfoNative information, uint informationLength);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct ByHandleFileInformation
     {
         public uint Attributes, CreationLow, CreationHigh, AccessLow, AccessHigh, WriteLow, WriteHigh, VolumeSerial, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
     }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct FileDispositionInfoNative { public byte DeleteFile; }
 
     // Identity is the complete 64-bit file index; VolumeSerial is compared separately.
     internal readonly record struct Metadata(bool IsReparsePoint, bool IsDirectory, long Length,
@@ -58,6 +70,20 @@ internal static class ComponentInspectionNative
     {
         var handle = CreateFileW(path, GenericRead, FileShare.Read, IntPtr.Zero, OpenExisting,
             FileFlagOpenReparsePoint | FileFlagOverlapped | (directory ? FileFlagBackupSemantics : 0), IntPtr.Zero);
+        if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return handle;
+    }
+
+    /// <summary>
+    /// Opens one existing object for a later handle-bound retirement. The caller must keep
+    /// its parent-directory binding and independently authenticate this handle's bytes.
+    /// Existing V2 verifier handles deny DELETE access, so they must be closed before this open.
+    /// </summary>
+    internal static SafeFileHandle OpenProtectedForDeletion(string path, bool directory = false)
+    {
+        var handle = CreateFileW(path, GenericRead | DeleteAccess, FileShare.Read, IntPtr.Zero,
+            OpenExisting, FileFlagOpenReparsePoint | FileFlagOverlapped |
+                (directory ? FileFlagBackupSemantics : 0), IntPtr.Zero);
         if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
         return handle;
     }
@@ -124,6 +150,41 @@ internal static class ComponentInspectionNative
         var write = ((ulong)value.WriteHigh << 32) | value.WriteLow;
         return new((value.Attributes & FileAttributeReparsePoint) != 0, (value.Attributes & FileAttributeDirectory) != 0,
             length, identity, write, value.VolumeSerial);
+    }
+
+    /// <summary>Reads the hard-link count from the retained file handle; an unavailable count fails closed.</summary>
+    internal static uint GetHardLinkCount(SafeFileHandle handle)
+    {
+        if (handle is null || handle.IsInvalid || handle.IsClosed)
+            throw new IOException("Ordinary file hard-link count is unavailable.");
+        if (!GetFileInformationByHandle(handle, out var value))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (GetFileType(handle) != FileTypeDisk ||
+            (value.Attributes & (FileAttributeDirectory | FileAttributeReparsePoint)) != 0 || value.Links == 0)
+            throw new IOException("Ordinary file hard-link count is unavailable.");
+        return value.Links;
+    }
+
+    /// <summary>
+    /// Marks the exact retained object for deletion; no pathname is reopened. The caller
+    /// must have authenticated this handle and retained the parent binding before calling.
+    /// An empty directory is required by Windows; failure leaves residue for the caller.
+    /// </summary>
+    internal static void MarkValidatedObjectForDeletion(SafeFileHandle handle, Metadata expected,
+        string expectedFinalPath, bool directory = false)
+    {
+        if (handle is null || handle.IsInvalid || handle.IsClosed || string.IsNullOrEmpty(expectedFinalPath) ||
+            expected.IsReparsePoint || expected.IsDirectory != directory ||
+            GetFileType(handle) != FileTypeDisk ||
+            GetMetadata(handle) != expected ||
+            !string.Equals(FinalPath(handle), expectedFinalPath, StringComparison.OrdinalIgnoreCase) ||
+            !HasOnlyDefaultDataStream(handle, directory) ||
+            (!directory && GetHardLinkCount(handle) != 1))
+            throw new IOException("Validated object deletion binding failed.");
+
+        var disposition = new FileDispositionInfoNative { DeleteFile = 1 };
+        if (!SetFileInformationByHandle(handle, FileDispositionInfoClass, ref disposition, 1))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
     }
 
     internal static ulong ComposeFileIndex(uint high, uint low) => ((ulong)high << 32) | low;
