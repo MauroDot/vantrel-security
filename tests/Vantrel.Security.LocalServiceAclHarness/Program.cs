@@ -14,6 +14,8 @@ internal static class Program
 {
     private static int Main(string[] args)
     {
+        if (args.Length != 0 && args[0] == "--product-parent-probe")
+            return ProductParentHarnessProgram.Run(args[1..]);
         if (!HarnessOptions.TryParse(args, out var options)) return 2;
         ServiceBase.Run(new LocalServiceHarnessService(options!));
         return 0;

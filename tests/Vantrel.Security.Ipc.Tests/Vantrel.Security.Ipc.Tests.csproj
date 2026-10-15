@@ -28,6 +28,18 @@
   <ItemGroup>
     <Compile Include="..\Vantrel.Security.LocalServiceAclHarness\HarnessProtocol.cs"
              Link="LocalServiceAclHarness\HarnessProtocol.cs" />
+    <Compile Include="..\Vantrel.Security.LocalServiceAclHarness\ProductParentNativeAccessEvidence.cs"
+             Link="LocalServiceAclHarness\ProductParentNativeAccessEvidence.cs" />
   </ItemGroup>
+
+  <!-- Prepare the reviewed, framework-dependent harness payload before VSTest runs.
+       This is a fixed test project/RID/output with no restore or caller-selected command. -->
+  <Target Name="PrepareLocalServiceHarnessPublish" BeforeTargets="VSTest">
+    <Error Condition="'$(Configuration)' != 'Debug' and '$(Configuration)' != 'Release'"
+           Text="LocalService harness publish requires Debug or Release." />
+    <MSBuild Projects="$(MSBuildThisFileDirectory)..\Vantrel.Security.LocalServiceAclHarness\Vantrel.Security.LocalServiceAclHarness.csproj"
+             Targets="Publish"
+             Properties="Configuration=$(Configuration);TargetFramework=net10.0-windows;RuntimeIdentifier=win-x64;SelfContained=false;PublishSelfContained=false;PublishSingleFile=false;PublishTrimmed=false;UseAppHost=true;Restore=false;SkipCopyUnchangedFiles=false;CopyOutputSymbolsToPublishDirectory=false;PublishDir=$(MSBuildThisFileDirectory)..\Vantrel.Security.LocalServiceAclHarness\bin\$(Configuration)\net10.0-windows\win-x64\publish\" />
+  </Target>
 
 </Project>
